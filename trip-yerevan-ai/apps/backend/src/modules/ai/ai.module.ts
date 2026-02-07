@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DistributionModule } from '../distribution/distribution.module';
 import { AiService } from './ai.service';
 import { AI_PROVIDER } from './providers/ai-provider.token';
-import { MockAiProvider } from './providers/mock-ai.provider';
+import { aiProviderFactory } from './providers/ai-provider.factory';
 import {
   LanguageService,
   SlotFillingService,
@@ -21,7 +22,12 @@ import {
   imports: [DistributionModule],
   providers: [
     AiService,
-    { provide: AI_PROVIDER, useClass: MockAiProvider },
+    {
+      provide: AI_PROVIDER,
+      useFactory: (configService: ConfigService) =>
+        aiProviderFactory(configService),
+      inject: [ConfigService],
+    },
     LanguageService,
     SlotFillingService,
     DraftMergeService,

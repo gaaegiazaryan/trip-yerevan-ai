@@ -9,6 +9,34 @@ import {
   SupportedLanguage,
 } from '../types';
 
+/**
+ * Canonical slot names in camelCase. Maps common LLM variations
+ * (snake_case, lowercase, etc.) to the correct TravelDraft key.
+ */
+const SLOT_NAME_MAP: Record<string, string> = {
+  destination: 'destination',
+  departurecity: 'departureCity',
+  departure_city: 'departureCity',
+  departuredate: 'departureDate',
+  departure_date: 'departureDate',
+  returndate: 'returnDate',
+  return_date: 'returnDate',
+  triptype: 'tripType',
+  trip_type: 'tripType',
+  adults: 'adults',
+  children: 'children',
+  childrenages: 'childrenAges',
+  children_ages: 'childrenAges',
+  infants: 'infants',
+  budgetmin: 'budgetMin',
+  budget_min: 'budgetMin',
+  budgetmax: 'budgetMax',
+  budget_max: 'budgetMax',
+  currency: 'currency',
+  preferences: 'preferences',
+  notes: 'notes',
+};
+
 @Injectable()
 export class AiParsingService {
   private readonly logger = new Logger(AiParsingService.name);
@@ -72,19 +100,37 @@ export class AiParsingService {
     }
   }
 
+  private normalizeSlotName(raw: string): string | null {
+    // Exact match first (already camelCase)
+    if (SLOT_NAME_MAP[raw]) return SLOT_NAME_MAP[raw];
+    // Try lowercase normalization
+    const lower = raw.toLowerCase();
+    if (SLOT_NAME_MAP[lower]) return SLOT_NAME_MAP[lower];
+    this.logger.warn(`Unknown slot name from AI: "${raw}", skipping`);
+    return null;
+  }
+
   private validateFields(raw: unknown[]): ExtractedField[] {
     if (!Array.isArray(raw)) return [];
 
-    return raw
-      .filter(
-        (f): f is Record<string, unknown> =>
-          typeof f === 'object' && f !== null && 'slotName' in f,
-      )
-      .map((f) => ({
-        slotName: String(f.slotName) as ExtractedField['slotName'],
+    const result: ExtractedField[] = [];
+
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null || !('slotName' in item)) {
+        continue;
+      }
+      const f = item as Record<string, unknown>;
+      const normalized = this.normalizeSlotName(String(f.slotName));
+      if (!normalized) continue;
+
+      result.push({
+        slotName: normalized as ExtractedField['slotName'],
         rawValue: String(f.rawValue ?? ''),
         parsedValue: f.parsedValue ?? null,
         confidence: typeof f.confidence === 'number' ? f.confidence : 0,
-      }));
+      });
+    }
+
+    return result;
   }
 }

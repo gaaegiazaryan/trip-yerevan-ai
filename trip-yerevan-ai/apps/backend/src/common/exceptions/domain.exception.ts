@@ -30,3 +30,17 @@ export class DraftConversionException extends DomainException {
     super(`Draft conversion failed for conversation ${conversationId}: ${message}`);
   }
 }
+
+export class InfrastructureException extends DomainException {
+  public readonly provider: string;
+  public readonly originalError?: Error;
+
+  constructor(message: string, provider: string, originalError?: Error) {
+    super(
+      `Infrastructure error [${provider}]: ${message}`,
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+    this.provider = provider;
+    this.originalError = originalError;
+  }
+}

@@ -67,6 +67,11 @@ export class AiEngineService {
       language,
     );
 
+    this.logger.debug(
+      `[${conversationId}] AI extraction: ${parseResult.extractedFields.length} fields: ` +
+        `[${parseResult.extractedFields.map((f) => `${f.slotName}=${JSON.stringify(f.parsedValue)}@${f.confidence}`).join(', ')}]`,
+    );
+
     // 5. Track tokens
     if (tokensUsed > 0) {
       await this.aiService.updateTokensUsed(conversationId, tokensUsed);
@@ -75,12 +80,20 @@ export class AiEngineService {
     // 6. Merge into draft → new TravelDraft
     const mergedDraft = this.draftMerge.merge(draft, parseResult);
 
+    this.logger.debug(
+      `[${conversationId}] Draft merge: ` +
+        `${this.slotFilling.getMissingRequired(draft).map((s) => s.name).join(',')} → ` +
+        `${this.slotFilling.getMissingRequired(mergedDraft).map((s) => s.name).join(',') || '(all filled)'}`,
+    );
+
     // 7. Transition state machine
     const newState = this.stateService.transition(state, mergedDraft, parseResult);
 
+    const nextSlot = this.slotFilling.getNextSlotToAsk(mergedDraft);
     this.logger.debug(
-      `[${conversationId}] ${state} → ${newState}, ` +
-        `slots: ${this.slotFilling.getCompletionPercentage(mergedDraft)}%`,
+      `[${conversationId}] State: ${state} → ${newState}, ` +
+        `completion: ${this.slotFilling.getCompletionPercentage(mergedDraft)}%, ` +
+        `nextSlot: ${nextSlot?.name ?? 'none'}`,
     );
 
     // 8. Handle READY_FOR_RFQ → convert draft to TravelRequest
