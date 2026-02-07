@@ -55,8 +55,20 @@ export class ResponseGeneratorService {
         return this.language.getTemplate('greeting', lang);
 
       case ConversationState.COLLECTING_DETAILS: {
+        // After edit button: all slots still filled, no "next question" to ask.
+        // Use the correction prompt to ask what to change.
+        if (parseResult.isCorrection) {
+          return this.language.getTemplate('correction_prompt', lang);
+        }
         const ack = this.buildAcknowledgement(parseResult, draft);
         const question = this.clarification.generateQuestion(draft, lang);
+        // Fallback: if no question generated (all slots filled after a natural correction),
+        // show the correction prompt rather than sending an empty message.
+        if (!question) {
+          return ack
+            ? `${ack}\n\n${this.language.getTemplate('correction_prompt', lang)}`
+            : this.language.getTemplate('correction_prompt', lang);
+        }
         return ack ? `${ack}\n\n${question}` : question;
       }
 
