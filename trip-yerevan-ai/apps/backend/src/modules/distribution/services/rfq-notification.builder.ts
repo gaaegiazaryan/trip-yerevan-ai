@@ -37,6 +37,85 @@ export class RfqNotificationBuilder {
     };
   }
 
+  /**
+   * Renders a Markdown-formatted Telegram message for agency RFQ delivery.
+   * Includes all structured fields in a human-readable format.
+   */
+  buildTelegramMessage(
+    notification: RfqNotificationPayload,
+    expiresAt: Date | null,
+  ): string {
+    const lines: string[] = [];
+
+    lines.push('*New Travel Request*');
+    lines.push('');
+    lines.push(`*Destination:* ${this.escapeMarkdown(notification.destination)}`);
+    lines.push(`*Departure city:* ${this.escapeMarkdown(notification.departureCity)}`);
+
+    // Dates
+    const depDate = notification.departureDate;
+    const retDate = notification.returnDate;
+    if (retDate) {
+      lines.push(`*Dates:* ${depDate} — ${retDate}`);
+    } else {
+      lines.push(`*Departure:* ${depDate}`);
+    }
+
+    // Travelers
+    const travelerParts: string[] = [];
+    travelerParts.push(`${notification.adults} adult${notification.adults > 1 ? 's' : ''}`);
+    if (notification.children > 0) {
+      const ages =
+        notification.childrenAges.length > 0
+          ? ` (ages: ${notification.childrenAges.join(', ')})`
+          : '';
+      travelerParts.push(
+        `${notification.children} child${notification.children > 1 ? 'ren' : ''}${ages}`,
+      );
+    }
+    if (notification.infants > 0) {
+      travelerParts.push(
+        `${notification.infants} infant${notification.infants > 1 ? 's' : ''}`,
+      );
+    }
+    lines.push(`*Travelers:* ${travelerParts.join(', ')}`);
+
+    // Trip type
+    if (notification.tripType) {
+      lines.push(
+        `*Trip type:* ${this.escapeMarkdown(this.formatTripType(notification.tripType))}`,
+      );
+    }
+
+    // Budget
+    if (notification.budgetRange) {
+      lines.push(`*Budget:* ${this.escapeMarkdown(notification.budgetRange)}`);
+    }
+
+    // Preferences
+    if (notification.preferences.length > 0) {
+      lines.push(
+        `*Preferences:* ${this.escapeMarkdown(notification.preferences.join(', '))}`,
+      );
+    }
+
+    // Notes
+    if (notification.notes) {
+      lines.push(`*Notes:* ${this.escapeMarkdown(notification.notes)}`);
+    }
+
+    lines.push('');
+
+    // Expiration
+    if (expiresAt) {
+      lines.push(`_Expires: ${expiresAt.toISOString().split('T')[0]}_`);
+    }
+
+    lines.push(`_Request ID: ${notification.travelRequestId}_`);
+
+    return lines.join('\n');
+  }
+
   private formatBudget(request: TravelRequest): string | null {
     const min = request.budgetMin ? Number(request.budgetMin) : null;
     const max = request.budgetMax ? Number(request.budgetMax) : null;
@@ -88,5 +167,16 @@ export class RfqNotificationBuilder {
     if (request.notes) lines.push(`Notes: ${request.notes}`);
 
     return lines.join('\n');
+  }
+
+  private formatTripType(tripType: string): string {
+    return tripType.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+  }
+
+  /**
+   * Escapes Markdown special characters for Telegram Markdown V1.
+   */
+  private escapeMarkdown(text: string): string {
+    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
   }
 }

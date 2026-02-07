@@ -10,6 +10,8 @@ import { UsersService, TelegramUserData } from '../users/users.service';
 import { AiEngineService } from '../ai/services/ai-engine.service';
 import { TelegramService } from './telegram.service';
 import { TelegramRateLimiter } from './telegram-rate-limiter';
+import { OfferWizardService } from '../offers/offer-wizard.service';
+import { isOfferSubmitResult } from '../offers/offer-wizard.types';
 import {
   getTelegramMessage,
   prismaLanguageToSupported,
@@ -28,6 +30,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly aiEngine: AiEngineService,
     private readonly telegramService: TelegramService,
     private readonly rateLimiter: TelegramRateLimiter,
+    private readonly offerWizard: OfferWizardService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -42,6 +45,9 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx));
     this.bot.callbackQuery(/^action:/, (ctx) =>
       this.handleCallbackQuery(ctx),
+    );
+    this.bot.callbackQuery(/^(rfq:|offer:)/, (ctx) =>
+      this.handleOfferCallback(ctx),
     );
 
     this.bot.catch((err) => {
@@ -117,6 +123,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     const from = ctx.from;
     const text = ctx.message?.text;
     if (!chatId || !from || !text) return;
+
+    // Route to offer wizard if one is active for this chat
+    if (this.offerWizard.hasActiveWizard(chatId)) {
+      await this.handleOfferWizardText(ctx, chatId, text);
+      return;
+    }
 
     const telegramId = BigInt(from.id);
 
@@ -238,6 +250,101 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
         ? prismaLanguageToSupported(user.preferredLanguage)
         : 'RU';
       await this.safeReply(chatId, lang);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Offer wizard handlers
+  // ---------------------------------------------------------------------------
+
+  private async handleOfferCallback(ctx: Context): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const from = ctx.from;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !from || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    this.logger.log(`[offer-callback] chatId=${chatId}, data=${data}`);
+
+    try {
+      // rfq:offer:<travelRequestId> → start wizard
+      if (data.startsWith('rfq:offer:')) {
+        const travelRequestId = data.replace('rfq:offer:', '');
+        const telegramId = BigInt(from.id);
+        const result = await this.offerWizard.startWizard(
+          chatId,
+          travelRequestId,
+          telegramId,
+        );
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+
+      // rfq:reject:<travelRequestId> → stub
+      if (data.startsWith('rfq:reject:')) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'RFQ rejected. Thank you for your response.',
+        );
+        return;
+      }
+
+      // offer:* → delegate to wizard service
+      const result = await this.offerWizard.handleCallback(chatId, data);
+
+      // If offer was submitted, notify the traveler
+      if (isOfferSubmitResult(result) && result.offerId) {
+        await this.sendWizardResponse(chatId, result);
+
+        if (result.travelerTelegramId !== BigInt(0)) {
+          await this.telegramService.sendOfferNotification(
+            Number(result.travelerTelegramId),
+            result.travelRequestId,
+          );
+        }
+        return;
+      }
+
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[offer-callback] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleOfferWizardText(
+    ctx: Context,
+    chatId: number,
+    text: string,
+  ): Promise<void> {
+    try {
+      const result = await this.offerWizard.handleTextInput(chatId, text);
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[offer-wizard-text] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async sendWizardResponse(
+    chatId: number,
+    result: { text: string; buttons?: { label: string; callbackData: string }[] },
+  ): Promise<void> {
+    if (result.buttons && result.buttons.length > 0) {
+      await this.telegramService.sendRfqToAgency(chatId, result.text, result.buttons);
+    } else {
+      await this.telegramService.sendMessage(chatId, result.text);
     }
   }
 

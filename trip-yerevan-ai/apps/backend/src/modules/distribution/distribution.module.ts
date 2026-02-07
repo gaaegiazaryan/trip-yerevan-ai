@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import {
   AgencyMatchingService,
@@ -7,12 +7,14 @@ import {
 } from './services';
 import { RfqDistributionProcessor } from './processors/rfq-distribution.processor';
 import { RFQ_DISTRIBUTION_QUEUE } from './types';
+import { TelegramModule } from '../telegram/telegram.module';
 
 @Module({
   imports: [
     BullModule.registerQueue({
       name: RFQ_DISTRIBUTION_QUEUE,
     }),
+    forwardRef(() => TelegramModule),
   ],
   providers: [
     AgencyMatchingService,

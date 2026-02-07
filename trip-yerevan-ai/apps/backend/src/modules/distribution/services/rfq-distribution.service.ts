@@ -43,6 +43,23 @@ export class RfqDistributionService {
    * Individual delivery failures do NOT fail the whole distribution.
    */
   async distribute(travelRequestId: string): Promise<DistributionResult> {
+    // 0. Idempotency guard — skip if already distributed
+    const existingCount = await this.prisma.rfqDistribution.count({
+      where: { travelRequestId },
+    });
+    if (existingCount > 0) {
+      this.logger.warn(
+        `Distribution already exists for request ${travelRequestId} ` +
+          `(${existingCount} records) — skipping duplicate distribution`,
+      );
+      return {
+        travelRequestId,
+        totalAgenciesMatched: 0,
+        distributionIds: [],
+        agencyIds: [],
+      };
+    }
+
     // 1. Load request
     const request = await this.prisma.travelRequest.findUniqueOrThrow({
       where: { id: travelRequestId },
@@ -235,7 +252,9 @@ export class RfqDistributionService {
         distributionId: distributionIds[index],
         travelRequestId,
         agencyId: agency.agencyId,
-        agencyTelegramChatId: agency.telegramChatId,
+        agencyTelegramChatId: agency.telegramChatId
+          ? agency.telegramChatId.toString()
+          : null,
         notification,
       } satisfies RfqJobPayload,
       opts: {

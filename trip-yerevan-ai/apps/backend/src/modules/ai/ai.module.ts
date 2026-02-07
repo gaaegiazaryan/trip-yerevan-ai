@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DistributionModule } from '../distribution/distribution.module';
 import { AiService } from './ai.service';
@@ -20,7 +20,7 @@ import {
 } from './services';
 
 @Module({
-  imports: [DistributionModule],
+  imports: [forwardRef(() => DistributionModule)],
   providers: [
     AiService,
     {

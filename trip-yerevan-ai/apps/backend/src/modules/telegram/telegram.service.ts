@@ -88,12 +88,80 @@ export class TelegramService {
   async sendOfferNotification(
     chatId: number,
     travelRequestId: string,
-    offerCount: number,
   ): Promise<void> {
-    // TODO: implement when distribution-to-Telegram notification is wired
-    this.logger.log(
-      `Notifying ${chatId} about ${offerCount} offers for request ${travelRequestId}`,
-    );
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot send offer notification');
+      return;
+    }
+
+    const text = '\ud83d\udce8 *New offer received* for your travel request\\!';
+
+    const keyboard = new InlineKeyboard();
+    keyboard
+      .text('\ud83d\udccb View offers', `offers:view:${travelRequestId}`)
+      .row();
+
+    try {
+      await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: keyboard,
+      });
+    } catch {
+      // Fallback without formatting
+      try {
+        await this.bot.api.sendMessage(
+          chatId,
+          'New offer received for your travel request!',
+          { reply_markup: keyboard },
+        );
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send offer notification to chat ${chatId}: ${retryError}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Sends an RFQ notification to an agency Telegram chat with inline action buttons.
+   * This is a pure I/O adapter method — message formatting is handled by the caller.
+   */
+  async sendRfqToAgency(
+    chatId: number,
+    text: string,
+    actions: { label: string; callbackData: string }[],
+  ): Promise<void> {
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot send RFQ to agency');
+      throw new Error('Telegram bot is not initialized');
+    }
+
+    const keyboard = new InlineKeyboard();
+    for (const action of actions) {
+      keyboard.text(action.label, action.callbackData).row();
+    }
+
+    try {
+      await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+    } catch (error) {
+      // Markdown parse failure — retry without formatting
+      this.logger.warn(
+        `Markdown RFQ send failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        await this.bot.api.sendMessage(chatId, text, {
+          reply_markup: keyboard,
+        });
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send RFQ to agency chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
+    }
   }
 
   private buildCallbackData(action: SuggestedAction): string {

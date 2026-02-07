@@ -7,9 +7,10 @@ import { TelegramRateLimiter } from './telegram-rate-limiter';
 import { TELEGRAM_BOT, TelegramBot } from './telegram-bot.provider';
 import { UsersModule } from '../users/users.module';
 import { AiModule } from '../ai/ai.module';
+import { OffersModule } from '../offers/offers.module';
 
 @Module({
-  imports: [UsersModule, AiModule],
+  imports: [UsersModule, AiModule, OffersModule],
   providers: [
     {
       provide: TELEGRAM_BOT,

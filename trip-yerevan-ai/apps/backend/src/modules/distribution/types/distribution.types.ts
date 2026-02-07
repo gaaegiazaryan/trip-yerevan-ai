@@ -7,7 +7,8 @@ export interface RfqJobPayload {
   distributionId: string;
   travelRequestId: string;
   agencyId: string;
-  agencyTelegramChatId: bigint | null;
+  /** Stored as string (not bigint) because BullMQ serializes payloads via JSON.stringify */
+  agencyTelegramChatId: string | null;
   notification: RfqNotificationPayload;
 }
 
