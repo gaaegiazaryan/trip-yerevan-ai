@@ -130,12 +130,12 @@ export class ResponseGeneratorService {
           },
           {
             type: 'edit_field',
-            label: lang === 'RU' ? 'Изменить' : lang === 'AM' ? 'Փdelays' : 'Edit',
+            label: lang === 'RU' ? 'Изменить' : lang === 'AM' ? 'Edit' : 'Edit',
             payload: 'edit',
           },
           {
             type: 'cancel',
-            label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Չdelays' : 'Cancel',
+            label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Cancel' : 'Cancel',
             payload: 'cancel',
           },
         ];
@@ -153,7 +153,7 @@ export class ResponseGeneratorService {
             ...fieldActions,
             {
               type: 'cancel',
-              label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Չeghарkel' : 'Cancel',
+              label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Cancel' : 'Cancel',
               payload: 'cancel',
             },
           ];
@@ -161,7 +161,7 @@ export class ResponseGeneratorService {
         return [
           {
             type: 'cancel',
-            label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Չdelays' : 'Cancel',
+            label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Cancel' : 'Cancel',
             payload: 'cancel',
           },
         ];

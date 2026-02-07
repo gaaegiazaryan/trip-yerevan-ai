@@ -37,9 +37,9 @@ export class MockAiProvider implements AIProviderInterface {
     this.extractChildrenAges(userMessage, fields);
 
     const isGreeting = /^(hi|hello|hey|привет|здравствуй|ողջույն|բարև)/i.test(lower.trim());
-    const isCancellation = /\b(cancel|stop|отмен|стоп|չdelays)\b/i.test(lower);
-    const isConfirmation = /\b(yes|да|correct|верно|confirm|подтвер|այո)\b/i.test(lower);
-    const isCorrection = /\b(no[,.]?\s|change|correct|исправ|измен|нет[,.]?\s|не так|փdelays)\b/i.test(lower);
+    const isCancellation = /\b(cancel|stop|отмен|стоп)\b/i.test(lower);
+    const isConfirmation = /\b(yes|да|correct|верно|confirm|подтвер)\b/i.test(lower);
+    const isCorrection = /\b(no[,.]?\s|change|correct|исправ|измен|нет[,.]?\s|не так)\b/i.test(lower);
 
     const response = JSON.stringify({
       extractedFields: fields,

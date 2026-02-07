@@ -7,6 +7,8 @@ type MessageKey =
   | 'error_not_registered'
   | 'rate_limited';
 
+// NOTE: AM translations use English as interim placeholders.
+// Replace with native Armenian text provided by a human translator.
 const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
   welcome: {
     RU:
@@ -15,9 +17,10 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
       'Просто напишите, куда и когда вы хотите поехать.\n\n' +
       'Например: _"Хочу в Дубай на двоих, 10-17 марта, бюджет до 2000$"_',
     AM:
-      'Բարի գdelays Trip Yerevan!\n\n' +
-      'Ես կdelays delays delays delays delays delays.\n\n' +
-      'Օdelay: _"Ուdelay delay delay delay delay"_',
+      'Welcome to Trip Yerevan!\n\n' +
+      'I will help you find the best travel deal. ' +
+      'Just tell me where and when you want to travel.\n\n' +
+      'For example: _"I want to go to Dubai for two, March 10-17, budget up to $2000"_',
     EN:
       'Welcome to Trip Yerevan!\n\n' +
       'I will help you find the best travel deal. ' +
@@ -26,22 +29,22 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
   },
   welcome_returning: {
     RU: 'С возвращением! Напишите, чем могу помочь.',
-    AM: 'Բარdelays delays! Delays delays delays.',
+    AM: 'Welcome back! Tell me how I can help.',
     EN: 'Welcome back! Tell me how I can help.',
   },
   error_generic: {
     RU: 'Произошла ошибка. Попробуйте ещё раз через несколько секунд.',
-    AM: 'Delays delays delays. Delays delays delays delays.',
+    AM: 'An error occurred. Please try again in a few seconds.',
     EN: 'An error occurred. Please try again in a few seconds.',
   },
   error_not_registered: {
     RU: 'Пожалуйста, нажмите /start чтобы начать.',
-    AM: 'Delays delays /start delays delays.',
+    AM: 'Please press /start to begin.',
     EN: 'Please press /start to begin.',
   },
   rate_limited: {
     RU: 'Пожалуйста, не так быстро. Подождите несколько секунд.',
-    AM: 'Delays delays delays delays delays.',
+    AM: 'Please slow down. Wait a few seconds.',
     EN: 'Please slow down. Wait a few seconds.',
   },
 };
