@@ -6,13 +6,18 @@ import {
   AIMessage,
   AIMessageRole,
   AIModel,
+  Prisma,
 } from '@prisma/client';
+import { TravelDraft } from './types';
+import { ConversationState } from './types';
 
 @Injectable()
 export class AiService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findActiveByUserId(userId: string): Promise<AIConversation | null> {
+  async findActiveByUserId(
+    userId: string,
+  ): Promise<(AIConversation & { messages: AIMessage[] }) | null> {
     return this.prisma.aIConversation.findFirst({
       where: { userId, status: AIConversationStatus.ACTIVE },
       include: { messages: { orderBy: { createdAt: 'asc' } } },
@@ -36,6 +41,55 @@ export class AiService {
     });
   }
 
+  async updateDraft(
+    conversationId: string,
+    draft: TravelDraft,
+    state: ConversationState,
+    language?: string,
+  ): Promise<AIConversation> {
+    const current = await this.prisma.aIConversation.findUniqueOrThrow({
+      where: { id: conversationId },
+    });
+
+    const snapshots = (current.draftSnapshots as Prisma.JsonArray) ?? [];
+    if (current.draftData) {
+      snapshots.push(current.draftData as Prisma.JsonValue);
+    }
+
+    return this.prisma.aIConversation.update({
+      where: { id: conversationId },
+      data: {
+        draftData: draft as unknown as Prisma.InputJsonValue,
+        draftSnapshots: snapshots as unknown as Prisma.InputJsonValue,
+        conversationState: state,
+        ...(language ? { detectedLanguage: language } : {}),
+      },
+    });
+  }
+
+  async getDraft(
+    conversationId: string,
+  ): Promise<{ draft: TravelDraft | null; state: ConversationState | null }> {
+    const conv = await this.prisma.aIConversation.findUniqueOrThrow({
+      where: { id: conversationId },
+    });
+
+    return {
+      draft: conv.draftData as unknown as TravelDraft | null,
+      state: conv.conversationState as ConversationState | null,
+    };
+  }
+
+  async updateTokensUsed(
+    conversationId: string,
+    additionalTokens: number,
+  ): Promise<void> {
+    await this.prisma.aIConversation.update({
+      where: { id: conversationId },
+      data: { tokensUsed: { increment: additionalTokens } },
+    });
+  }
+
   async complete(
     conversationId: string,
     travelRequestId: string,
@@ -44,6 +98,7 @@ export class AiService {
       where: { id: conversationId },
       data: {
         status: AIConversationStatus.COMPLETED,
+        conversationState: ConversationState.COMPLETED,
         travelRequestId,
         completedAt: new Date(),
       },
@@ -55,6 +110,7 @@ export class AiService {
       where: { id: conversationId },
       data: {
         status: AIConversationStatus.ABANDONED,
+        conversationState: ConversationState.CANCELLED,
         completedAt: new Date(),
       },
     });

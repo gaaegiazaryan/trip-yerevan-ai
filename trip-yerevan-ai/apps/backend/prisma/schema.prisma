@@ -406,10 +406,17 @@ model AIConversation {
   createdAt       DateTime             @default(now())
   completedAt     DateTime?
 
+  // AI Engine state
+  conversationState String?
+  draftData         Json?
+  draftSnapshots    Json?
+  detectedLanguage  String?
+
   // Relations
-  user          User           @relation(fields: [userId], references: [id])
-  travelRequest TravelRequest? @relation(fields: [travelRequestId], references: [id])
-  messages      AIMessage[]
+  user            User              @relation(fields: [userId], references: [id])
+  travelRequest   TravelRequest?    @relation(fields: [travelRequestId], references: [id])
+  messages        AIMessage[]
+  feedbackSignals AIFeedbackSignal[]
 
   @@index([userId, status])
   @@map("ai_conversations")
@@ -428,4 +435,22 @@ model AIMessage {
 
   @@index([conversationId, createdAt])
   @@map("ai_messages")
+}
+
+model AIFeedbackSignal {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @db.Uuid
+  type           String
+  fieldName      String?
+  originalValue  Json?
+  correctedValue Json?
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  // Relations
+  conversation AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([type])
+  @@map("ai_feedback_signals")
 }
