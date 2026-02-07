@@ -23,8 +23,18 @@ export class TelegramService {
         parse_mode: 'Markdown',
       });
     } catch (error) {
-      this.logger.error(`Failed to send message to chat ${chatId}: ${error}`);
-      throw error;
+      // Markdown parse failure — retry without formatting
+      this.logger.warn(
+        `Markdown send failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        await this.bot.api.sendMessage(chatId, text);
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send message to chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
     }
   }
 
@@ -50,10 +60,20 @@ export class TelegramService {
         reply_markup: keyboard,
       });
     } catch (error) {
-      this.logger.error(
-        `Failed to send inline keyboard to chat ${chatId}: ${error}`,
+      // Markdown parse failure — retry without formatting
+      this.logger.warn(
+        `Markdown keyboard send failed for chat ${chatId}, retrying as plain text`,
       );
-      throw error;
+      try {
+        await this.bot.api.sendMessage(chatId, text, {
+          reply_markup: keyboard,
+        });
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send inline keyboard to chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
     }
   }
 
