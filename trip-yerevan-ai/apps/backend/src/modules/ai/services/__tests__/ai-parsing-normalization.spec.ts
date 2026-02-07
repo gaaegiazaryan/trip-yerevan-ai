@@ -122,3 +122,66 @@ describe('AiParsingService — slot name normalization', () => {
     expect(parseResult.extractedFields[1].slotName).toBe('budgetMax');
   });
 });
+
+describe('AiParsingService — JSON extraction from wrapped responses', () => {
+  it('should parse JSON wrapped in ```json code fences', async () => {
+    const json = JSON.stringify({
+      extractedFields: [{ slotName: 'destination', rawValue: 'Paris', parsedValue: 'Paris', confidence: 0.9 }],
+      isGreeting: false, isCancellation: false, isConfirmation: false, isCorrection: false,
+    });
+    const wrapped = '```json\n' + json + '\n```';
+    const provider = createMockProvider(wrapped);
+
+    const service = new AiParsingService(provider);
+    const { parseResult } = await service.parse('Paris', [], createEmptyDraft(), 'EN');
+
+    expect(parseResult.extractedFields).toHaveLength(1);
+    expect(parseResult.extractedFields[0].slotName).toBe('destination');
+    expect(parseResult.extractedFields[0].parsedValue).toBe('Paris');
+  });
+
+  it('should parse JSON wrapped in ``` code fences (no language tag)', async () => {
+    const json = JSON.stringify({
+      extractedFields: [],
+      isGreeting: true, isCancellation: false, isConfirmation: false, isCorrection: false,
+    });
+    const wrapped = '```\n' + json + '\n```';
+    const provider = createMockProvider(wrapped);
+
+    const service = new AiParsingService(provider);
+    const { parseResult } = await service.parse('hello', [], createEmptyDraft(), 'EN');
+
+    expect(parseResult.isGreeting).toBe(true);
+    expect(parseResult.extractedFields).toHaveLength(0);
+  });
+
+  it('should parse JSON with leading text before the object', async () => {
+    const json = JSON.stringify({
+      extractedFields: [{ slotName: 'adults', rawValue: '2', parsedValue: 2, confidence: 0.9 }],
+      isGreeting: false, isCancellation: false, isConfirmation: false, isCorrection: false,
+    });
+    const wrapped = 'Here is the extracted data:\n' + json;
+    const provider = createMockProvider(wrapped);
+
+    const service = new AiParsingService(provider);
+    const { parseResult } = await service.parse('2 adults', [], createEmptyDraft(), 'EN');
+
+    expect(parseResult.extractedFields).toHaveLength(1);
+    expect(parseResult.extractedFields[0].slotName).toBe('adults');
+    expect(parseResult.extractedFields[0].parsedValue).toBe(2);
+  });
+
+  it('should handle clean JSON (no wrapping) as before', async () => {
+    const json = JSON.stringify({
+      extractedFields: [{ slotName: 'destination', rawValue: 'Rome', parsedValue: 'Rome', confidence: 0.85 }],
+      isGreeting: false, isCancellation: false, isConfirmation: false, isCorrection: false,
+    });
+    const provider = createMockProvider(json);
+
+    const service = new AiParsingService(provider);
+    const { parseResult } = await service.parse('Rome', [], createEmptyDraft(), 'EN');
+
+    expect(parseResult.extractedFields).toHaveLength(1);
+    expect(parseResult.extractedFields[0].parsedValue).toBe('Rome');
+  });
+});

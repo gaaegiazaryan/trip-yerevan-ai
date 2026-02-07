@@ -72,7 +72,8 @@ export class AiParsingService {
 
   private parseResponse(content: string): ParseResult {
     try {
-      const raw = JSON.parse(content);
+      const cleaned = this.extractJson(content);
+      const raw = JSON.parse(cleaned);
       return {
         extractedFields: this.validateFields(raw.extractedFields ?? []),
         detectedLanguage: raw.detectedLanguage ?? 'EN',
@@ -85,7 +86,10 @@ export class AiParsingService {
         rawAiResponse: content,
       };
     } catch {
-      this.logger.warn('Failed to parse AI response, returning empty result');
+      this.logger.warn(
+        `Failed to parse AI response (${content.length} chars), ` +
+          `first 200: ${content.slice(0, 200)}`,
+      );
       return {
         extractedFields: [],
         detectedLanguage: 'EN',
@@ -98,6 +102,27 @@ export class AiParsingService {
         rawAiResponse: content,
       };
     }
+  }
+
+  /**
+   * Extract JSON from AI response that may be wrapped in markdown code fences
+   * or contain leading/trailing text.
+   */
+  private extractJson(content: string): string {
+    // Already valid JSON — fast path
+    const trimmed = content.trim();
+    if (trimmed.startsWith('{')) return trimmed;
+
+    // Strip ```json ... ``` or ``` ... ``` code fences
+    const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+    if (fenceMatch) return fenceMatch[1].trim();
+
+    // Last resort: find first { to last }
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first !== -1 && last > first) return trimmed.slice(first, last + 1);
+
+    return trimmed;
   }
 
   private normalizeSlotName(raw: string): string | null {
