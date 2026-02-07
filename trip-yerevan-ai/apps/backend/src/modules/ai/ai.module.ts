@@ -15,6 +15,7 @@ import {
   FeedbackService,
   DraftValidationService,
   DraftToRequestService,
+  SlotEditDetectionService,
   AiEngineService,
 } from './services';
 
@@ -38,6 +39,7 @@ import {
     FeedbackService,
     DraftValidationService,
     DraftToRequestService,
+    SlotEditDetectionService,
     AiEngineService,
   ],
   exports: [AiService, AiEngineService],

@@ -10,6 +10,7 @@ import {
 import { ClarificationService } from './clarification.service';
 import { SlotFillingService } from './slot-filling.service';
 import { LanguageService } from './language.service';
+import { SlotEditDetectionService } from './slot-edit-detection.service';
 
 @Injectable()
 export class ResponseGeneratorService {
@@ -17,6 +18,7 @@ export class ResponseGeneratorService {
     private readonly clarification: ClarificationService,
     private readonly slotFilling: SlotFillingService,
     private readonly language: LanguageService,
+    private readonly slotEditDetection: SlotEditDetectionService,
   ) {}
 
   generate(
@@ -27,7 +29,7 @@ export class ResponseGeneratorService {
     lang: SupportedLanguage,
   ): ConversationResponse {
     const textResponse = this.buildText(state, draft, parseResult, lang);
-    const suggestedActions = this.buildActions(state, lang);
+    const suggestedActions = this.buildActions(state, lang, parseResult);
 
     return {
       conversationId,
@@ -116,6 +118,7 @@ export class ResponseGeneratorService {
   private buildActions(
     state: ConversationState,
     lang: SupportedLanguage,
+    parseResult: ParseResult,
   ): SuggestedAction[] {
     switch (state) {
       case ConversationState.CONFIRMING_DRAFT:
@@ -138,6 +141,23 @@ export class ResponseGeneratorService {
         ];
 
       case ConversationState.COLLECTING_DETAILS:
+        if (parseResult.isCorrection) {
+          // Show editable field buttons so user can pick what to change
+          const groups = this.slotEditDetection.getEditableGroups();
+          const fieldActions: SuggestedAction[] = groups.map((g) => ({
+            type: 'edit_field' as const,
+            label: g.labels[lang],
+            payload: g.key,
+          }));
+          return [
+            ...fieldActions,
+            {
+              type: 'cancel',
+              label: lang === 'RU' ? 'Отмена' : lang === 'AM' ? 'Չeghарkel' : 'Cancel',
+              payload: 'cancel',
+            },
+          ];
+        }
         return [
           {
             type: 'cancel',

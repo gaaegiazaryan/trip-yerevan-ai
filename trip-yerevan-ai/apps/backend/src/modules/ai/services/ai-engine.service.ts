@@ -8,6 +8,7 @@ import { ResponseGeneratorService } from './response-generator.service';
 import { LanguageService } from './language.service';
 import { FeedbackService } from './feedback.service';
 import { DraftToRequestService, ConversionResult } from './draft-to-request.service';
+import { SlotEditDetectionService } from './slot-edit-detection.service';
 import { RfqDistributionService } from '../../distribution/services/rfq-distribution.service';
 import {
   ConversationState,
@@ -16,6 +17,7 @@ import {
   TravelDraft,
   AIProviderMessage,
   SupportedLanguage,
+  SlotName,
   createEmptyDraft,
 } from '../types';
 import { AIMessageRole, AIModel } from '@prisma/client';
@@ -38,6 +40,7 @@ export class AiEngineService {
     private readonly languageService: LanguageService,
     private readonly feedback: FeedbackService,
     private readonly draftToRequest: DraftToRequestService,
+    private readonly slotEditDetection: SlotEditDetectionService,
     private readonly rfqDistribution: RfqDistributionService,
   ) {}
 
@@ -78,12 +81,46 @@ export class AiEngineService {
         );
       }
 
-      // 5. Parse via AIProvider → ParseResult (skip for synthetic messages)
+      // 4b. Handle slot editing: clear selected slots from draft.
+      //     Specific field callback (__EDIT__dates) or free-text in edit mode.
+      let currentDraft = draft;
+      let skipLlm = false;
+
+      const editFieldKey = this.extractEditFieldKey(message);
+      if (editFieldKey) {
+        // Case: __EDIT__<field> callback (e.g. __EDIT__dates, __EDIT__budget)
+        const editResult = this.slotEditDetection.detect(editFieldKey);
+        if (editResult) {
+          currentDraft = this.clearDraftSlots(draft, editResult.slots);
+          skipLlm = true;
+          this.logger.log(
+            `[${conversationId}] Slot edit (callback): clearing ${editResult.group.key} → [${editResult.slots.join(', ')}]`,
+          );
+        }
+      } else if (
+        !synthetic &&
+        state === ConversationState.COLLECTING_DETAILS &&
+        this.slotFilling.isComplete(draft)
+      ) {
+        // Case: free-text in edit mode (all slots filled, correction prompt was shown)
+        const editResult = this.slotEditDetection.detect(message);
+        if (editResult) {
+          currentDraft = this.clearDraftSlots(draft, editResult.slots);
+          skipLlm = true;
+          this.logger.log(
+            `[${conversationId}] Slot edit (free-text): clearing ${editResult.group.key} → [${editResult.slots.join(', ')}]`,
+          );
+        }
+      }
+
+      // 5. Parse via AIProvider → ParseResult (skip for synthetic and slot edit)
       let parseResult: ParseResult;
       let tokensUsed = 0;
 
       if (synthetic) {
         parseResult = synthetic;
+      } else if (skipLlm) {
+        parseResult = this.createEmptyParseResult(language);
       } else {
         // Filter synthetic messages from history before sending to LLM
         const conversationHistory = this.buildHistory(
@@ -92,7 +129,7 @@ export class AiEngineService {
         const aiResult = await this.parsing.parse(
           message,
           conversationHistory,
-          draft,
+          currentDraft,
           language,
         );
         parseResult = aiResult.parseResult;
@@ -110,7 +147,7 @@ export class AiEngineService {
       }
 
       // 7. Merge into draft → new TravelDraft
-      const mergedDraft = this.draftMerge.merge(draft, parseResult);
+      const mergedDraft = this.draftMerge.merge(currentDraft, parseResult);
 
       this.logger.debug(
         `[${conversationId}] Draft merge: ` +
@@ -449,7 +486,13 @@ export class AiEngineService {
       return { ...base, isCancellation: true };
     }
     if (message.startsWith('__EDIT__')) {
-      return { ...base, isCorrection: true };
+      const suffix = message.substring('__EDIT__'.length);
+      if (suffix === 'edit') {
+        // Generic edit → show field selection keyboard
+        return { ...base, isCorrection: true };
+      }
+      // Specific field edit → slots will be cleared, flow through normal question path
+      return { ...base, isCorrection: false };
     }
 
     return null;
@@ -464,6 +507,50 @@ export class AiEngineService {
       || content.startsWith('__CANCEL__')
       || content.startsWith('__EDIT__')
       || content.startsWith('[synthetic:');
+  }
+
+  /**
+   * Extract the field key from a specific field edit callback.
+   * Returns null for generic edit (__EDIT__edit) or non-edit messages.
+   */
+  private extractEditFieldKey(message: string): string | null {
+    if (!message.startsWith('__EDIT__')) return null;
+    const suffix = message.substring('__EDIT__'.length);
+    if (suffix === 'edit') return null;
+    return suffix;
+  }
+
+  /**
+   * Clear specific slots from a draft, resetting them to empty state.
+   */
+  private clearDraftSlots(draft: TravelDraft, slots: SlotName[]): TravelDraft {
+    const now = new Date().toISOString();
+    const cleared: Record<string, unknown> = { ...draft, version: draft.version + 1 };
+
+    for (const slot of slots) {
+      cleared[slot] = {
+        value: null,
+        confidence: 0,
+        source: 'default',
+        updatedAt: now,
+      };
+    }
+
+    return cleared as unknown as TravelDraft;
+  }
+
+  private createEmptyParseResult(language: SupportedLanguage): ParseResult {
+    return {
+      extractedFields: [],
+      detectedLanguage: language,
+      overallConfidence: 0,
+      suggestedQuestion: null,
+      isGreeting: false,
+      isCancellation: false,
+      isConfirmation: false,
+      isCorrection: false,
+      rawAiResponse: '[slot-edit]',
+    };
   }
 
   private buildHistory(

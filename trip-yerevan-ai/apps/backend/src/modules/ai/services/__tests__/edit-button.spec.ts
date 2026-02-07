@@ -7,6 +7,7 @@ import { ResponseGeneratorService } from '../response-generator.service';
 import { ClarificationService } from '../clarification.service';
 import { SlotFillingService } from '../slot-filling.service';
 import { LanguageService } from '../language.service';
+import { SlotEditDetectionService } from '../slot-edit-detection.service';
 import {
   ConversationState,
   ParseResult,
@@ -70,7 +71,8 @@ describe('ResponseGeneratorService — Edit button flow', () => {
     const slotFilling = new SlotFillingService();
     const language = new LanguageService();
     const clarification = new ClarificationService(slotFilling, language);
-    service = new ResponseGeneratorService(clarification, slotFilling, language);
+    const slotEditDetection = new SlotEditDetectionService();
+    service = new ResponseGeneratorService(clarification, slotFilling, language, slotEditDetection);
   });
 
   it('should return correction_prompt when isCorrection in COLLECTING_DETAILS', () => {
@@ -105,7 +107,7 @@ describe('ResponseGeneratorService — Edit button flow', () => {
     expect(response.textResponse).toBe('Got it, what would you like to change?');
   });
 
-  it('should return cancel action in COLLECTING_DETAILS state', () => {
+  it('should return field selection + cancel actions when isCorrection in COLLECTING_DETAILS', () => {
     const draft = createFilledDraft();
     const parseResult = createCorrectionParseResult();
 
@@ -117,8 +119,18 @@ describe('ResponseGeneratorService — Edit button flow', () => {
       'RU',
     );
 
-    expect(response.suggestedActions).toHaveLength(1);
-    expect(response.suggestedActions[0].type).toBe('cancel');
+    // 7 field groups + 1 cancel button
+    expect(response.suggestedActions.length).toBeGreaterThan(1);
+    const types = response.suggestedActions.map((a) => a.type);
+    expect(types).toContain('edit_field');
+    expect(types[types.length - 1]).toBe('cancel');
+    // Check field payloads include expected group keys
+    const fieldPayloads = response.suggestedActions
+      .filter((a) => a.type === 'edit_field')
+      .map((a) => a.payload);
+    expect(fieldPayloads).toContain('destination');
+    expect(fieldPayloads).toContain('dates');
+    expect(fieldPayloads).toContain('budget');
   });
 
   it('should NOT return empty text when all slots filled and no correction', () => {

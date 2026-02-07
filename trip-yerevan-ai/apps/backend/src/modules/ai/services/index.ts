@@ -8,4 +8,5 @@ export { ResponseGeneratorService } from './response-generator.service';
 export { FeedbackService } from './feedback.service';
 export { DraftValidationService } from './draft-validation.service';
 export { DraftToRequestService } from './draft-to-request.service';
+export { SlotEditDetectionService } from './slot-edit-detection.service';
 export { AiEngineService } from './ai-engine.service';
