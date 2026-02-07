@@ -13,9 +13,9 @@ export class AgenciesService {
     });
   }
 
-  async findVerified(): Promise<Agency[]> {
+  async findApproved(): Promise<Agency[]> {
     return this.prisma.agency.findMany({
-      where: { status: AgencyStatus.VERIFIED },
+      where: { status: AgencyStatus.APPROVED },
     });
   }
 
@@ -25,7 +25,7 @@ export class AgenciesService {
   ): Promise<Agency[]> {
     return this.prisma.agency.findMany({
       where: {
-        status: AgencyStatus.VERIFIED,
+        status: AgencyStatus.APPROVED,
         OR: [
           { regions: { hasSome: regions } },
           { specializations: { hasSome: specializations } },

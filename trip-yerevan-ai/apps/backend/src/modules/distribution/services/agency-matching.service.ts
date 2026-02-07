@@ -20,26 +20,26 @@ export class AgencyMatchingService {
   /**
    * Matches agencies to a travel request using multi-factor scoring:
    *
-   *   1. Status must be VERIFIED
+   *   1. Status must be APPROVED
    *   2. Rating >= threshold
    *   3. Score by: region match (+3), specialization match (+2), rating bonus (+0-1)
    *   4. Sort by score descending
-   *   5. If no scored matches, fall back to all verified agencies
+   *   5. If no scored matches, fall back to all approved agencies
    *
    * Returns prioritized list with match reasons.
    */
   async match(criteria: MatchCriteria): Promise<AgencyMatchResult[]> {
-    // Fetch all verified agencies above rating threshold
+    // Fetch all approved agencies above rating threshold
     const agencies = await this.prisma.agency.findMany({
       where: {
-        status: AgencyStatus.VERIFIED,
+        status: AgencyStatus.APPROVED,
         rating: { gte: MIN_RATING_THRESHOLD },
       },
       orderBy: { rating: 'desc' },
     });
 
     if (agencies.length === 0) {
-      this.logger.warn('No verified agencies found for matching');
+      this.logger.warn('No approved agencies found for matching');
       return [];
     }
 
@@ -92,7 +92,7 @@ export class AgencyMatchingService {
     // Sort by score descending, then rating
     scored.sort((a, b) => b.matchScore - a.matchScore);
 
-    // If no agency scored above 0, return all verified (broadened fallback)
+    // If no agency scored above 0, return all approved (broadened fallback)
     const hasScored = scored.some((s) => s.matchScore > 0);
     const results = hasScored
       ? scored.filter((s) => s.matchScore > 0)

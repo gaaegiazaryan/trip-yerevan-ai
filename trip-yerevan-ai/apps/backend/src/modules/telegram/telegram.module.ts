@@ -8,9 +8,10 @@ import { TELEGRAM_BOT, TelegramBot } from './telegram-bot.provider';
 import { UsersModule } from '../users/users.module';
 import { AiModule } from '../ai/ai.module';
 import { OffersModule } from '../offers/offers.module';
+import { AgenciesModule } from '../agencies/agencies.module';
 
 @Module({
-  imports: [UsersModule, AiModule, OffersModule],
+  imports: [UsersModule, AiModule, OffersModule, AgenciesModule],
   providers: [
     {
       provide: TELEGRAM_BOT,

@@ -12,11 +12,13 @@ import { TelegramService } from './telegram.service';
 import { TelegramRateLimiter } from './telegram-rate-limiter';
 import { OfferWizardService } from '../offers/offer-wizard.service';
 import { isOfferSubmitResult } from '../offers/offer-wizard.types';
+import { AgencyApplicationService } from '../agencies/agency-application.service';
 import {
   getTelegramMessage,
   prismaLanguageToSupported,
 } from './telegram-messages';
 import { SupportedLanguage } from '../ai/types';
+import { UserRole } from '@prisma/client';
 import type { Context } from 'grammy';
 
 @Injectable()
@@ -31,6 +33,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly telegramService: TelegramService,
     private readonly rateLimiter: TelegramRateLimiter,
     private readonly offerWizard: OfferWizardService,
+    private readonly agencyApp: AgencyApplicationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -42,12 +45,19 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     this.logger.log('Registering Telegram bot handlers');
 
     this.bot.command('start', (ctx) => this.handleStart(ctx));
+    this.bot.command('agency', (ctx) => this.handleAgencyCommand(ctx));
+    this.bot.command('review_agencies', (ctx) =>
+      this.handleReviewCommand(ctx),
+    );
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx));
     this.bot.callbackQuery(/^action:/, (ctx) =>
       this.handleCallbackQuery(ctx),
     );
     this.bot.callbackQuery(/^(rfq:|offer:)/, (ctx) =>
       this.handleOfferCallback(ctx),
+    );
+    this.bot.callbackQuery(/^(agency:|review:)/, (ctx) =>
+      this.handleAgencyCallback(ctx),
     );
 
     this.bot.catch((err) => {
@@ -123,6 +133,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     const from = ctx.from;
     const text = ctx.message?.text;
     if (!chatId || !from || !text) return;
+
+    // Route to agency wizard / rejection reason if active
+    if (this.agencyApp.hasActiveWizard(chatId) || this.agencyApp.hasPendingRejectReason(chatId)) {
+      await this.handleAgencyWizardText(chatId, text);
+      return;
+    }
 
     // Route to offer wizard if one is active for this chat
     if (this.offerWizard.hasActiveWizard(chatId)) {
@@ -345,6 +361,203 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       await this.telegramService.sendRfqToAgency(chatId, result.text, result.buttons);
     } else {
       await this.telegramService.sendMessage(chatId, result.text);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agency onboarding handlers
+  // ---------------------------------------------------------------------------
+
+  private async handleAgencyCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    const from = ctx.from;
+    if (!chatId || !from) return;
+
+    const telegramId = BigInt(from.id);
+    this.logger.log(`[/agency] telegramId=${telegramId}, chatId=${chatId}`);
+
+    try {
+      const result = await this.agencyApp.startOrResume(chatId, telegramId);
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[/agency] Error for telegramId=${telegramId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleReviewCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    const from = ctx.from;
+    if (!chatId || !from) return;
+
+    const telegramId = BigInt(from.id);
+    this.logger.log(
+      `[/review_agencies] telegramId=${telegramId}, chatId=${chatId}`,
+    );
+
+    try {
+      // Check user role
+      const user = await this.usersService.findByTelegramId(telegramId);
+      if (!user) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'You are not registered.',
+        );
+        return;
+      }
+
+      if (user.role !== UserRole.ADMIN && user.role !== UserRole.MANAGER) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'This command is restricted to managers and admins.',
+        );
+        return;
+      }
+
+      const apps = await this.agencyApp.findPendingApplications();
+
+      if (apps.length === 0) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'No pending agency applications.',
+        );
+        return;
+      }
+
+      const lines = ['*Pending Agency Applications*', ''];
+      const buttons: { label: string; callbackData: string }[] = [];
+
+      for (const app of apps) {
+        const data = app.draftData as { name: string };
+        lines.push(
+          `- ${data.name} (${app.createdAt.toISOString().split('T')[0]})`,
+        );
+        buttons.push({
+          label: `Review: ${data.name}`,
+          callbackData: `review:view:${app.id}`,
+        });
+      }
+
+      await this.sendWizardResponse(chatId, {
+        text: lines.join('\n'),
+        buttons,
+      });
+    } catch (error) {
+      this.logger.error(
+        `[/review_agencies] Error: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleAgencyCallback(ctx: Context): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const from = ctx.from;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !from || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    this.logger.log(`[agency-callback] chatId=${chatId}, data=${data}`);
+
+    try {
+      // agency:* → delegate to wizard
+      if (data.startsWith('agency:')) {
+        const result = await this.agencyApp.handleCallback(chatId, data);
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+
+      // review:view:<appId>
+      if (data.startsWith('review:view:')) {
+        const appId = data.replace('review:view:', '');
+        const result = await this.agencyApp.getApplicationDetails(appId);
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+
+      // review:approve:<appId>
+      if (data.startsWith('review:approve:')) {
+        const appId = data.replace('review:approve:', '');
+        const telegramId = BigInt(from.id);
+        const user = await this.usersService.findByTelegramId(telegramId);
+        if (!user) return;
+
+        const result = await this.agencyApp.approveApplication(appId, user.id);
+
+        await this.telegramService.sendMessage(
+          chatId,
+          `Agency application approved. Agency ID: ${result.agencyId.slice(0, 8)}...`,
+        );
+
+        // Notify applicant
+        if (result.applicantTelegramId) {
+          await this.telegramService
+            .sendMessage(
+              Number(result.applicantTelegramId),
+              'Your agency application has been *approved*! You will now receive RFQ notifications.',
+            )
+            .catch(() => {});
+        }
+        return;
+      }
+
+      // review:reject:<appId>
+      if (data.startsWith('review:reject:')) {
+        const appId = data.replace('review:reject:', '');
+        const telegramId = BigInt(from.id);
+        const user = await this.usersService.findByTelegramId(telegramId);
+        if (!user) return;
+
+        const result = this.agencyApp.setPendingRejectReason(
+          chatId,
+          appId,
+          user.id,
+        );
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+    } catch (error) {
+      this.logger.error(
+        `[agency-callback] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleAgencyWizardText(
+    chatId: number,
+    text: string,
+  ): Promise<void> {
+    try {
+      const result = await this.agencyApp.handleTextInput(chatId, text);
+      await this.sendWizardResponse(chatId, result);
+
+      // If rejection was completed, notify the applicant
+      if (result.text.startsWith('Application rejected.')) {
+        // The rejection reason flow already notified through the service;
+        // no additional traveler notification needed here since it's
+        // between the reviewer and the service layer.
+      }
+    } catch (error) {
+      this.logger.error(
+        `[agency-wizard-text] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
     }
   }
 

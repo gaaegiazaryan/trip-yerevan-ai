@@ -7,7 +7,7 @@ export class AgenciesController {
 
   @Get()
   async findAll() {
-    return this.agenciesService.findVerified();
+    return this.agenciesService.findApproved();
   }
 
   @Get(':id')

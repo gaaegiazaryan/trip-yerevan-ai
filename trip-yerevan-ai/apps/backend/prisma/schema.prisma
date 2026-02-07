@@ -24,6 +24,7 @@ enum Language {
 
 enum UserRole {
   TRAVELER
+  MANAGER
   ADMIN
 }
 
@@ -34,7 +35,8 @@ enum UserStatus {
 
 enum AgencyStatus {
   PENDING
-  VERIFIED
+  APPROVED
+  REJECTED
   SUSPENDED
   BLOCKED
 }
@@ -162,12 +164,14 @@ model User {
   updatedAt         DateTime @updatedAt
 
   // Relations
-  agencyAgent      AgencyAgent?
-  travelRequests   TravelRequest[]
-  bookings         Booking[]
-  proxyChats       ProxyChat[]
-  aiConversations  AIConversation[]
-  bookingHistory   BookingStatusHistory[]
+  agencyAgent          AgencyAgent?
+  travelRequests       TravelRequest[]
+  bookings             Booking[]
+  proxyChats           ProxyChat[]
+  aiConversations      AIConversation[]
+  bookingHistory       BookingStatusHistory[]
+  reviewedApplications AgencyApplication[] @relation("ApplicationReviewer")
+  verifiedAgencies     Agency[]            @relation("AgencyVerifier")
 
   @@map("users")
 }
@@ -180,17 +184,20 @@ model Agency {
   id              String       @id @default(uuid()) @db.Uuid
   name            String       @unique
   description     String?
-  contactEmail    String
-  contactPhone    String
-  telegramChatId  BigInt?
-  status          AgencyStatus @default(PENDING)
-  specializations String[]     @default([])
-  regions         String[]     @default([])
-  rating          Decimal      @default(0) @db.Decimal(3, 2)
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  contactEmail     String?
+  contactPhone     String
+  telegramChatId   BigInt?
+  status           AgencyStatus @default(PENDING)
+  specializations  String[]     @default([])
+  regions          String[]     @default([])
+  rating           Decimal      @default(0) @db.Decimal(3, 2)
+  verifiedAt       DateTime?
+  verifiedByUserId String?      @db.Uuid
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
   // Relations
+  verifiedBy       User?        @relation("AgencyVerifier", fields: [verifiedByUserId], references: [id])
   agents           AgencyAgent[]
   offers           Offer[]
   proxyChats       ProxyChat[]
@@ -490,4 +497,33 @@ model RfqDistribution {
   @@index([agencyId])
   @@index([deliveryStatus])
   @@map("rfq_distributions")
+}
+
+// ============================================================================
+// AGENCY APPLICATIONS
+// ============================================================================
+
+enum AgencyApplicationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+model AgencyApplication {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  applicantTelegramId BigInt
+  draftData           Json
+  status              AgencyApplicationStatus @default(SUBMITTED)
+  reviewerUserId      String?                 @db.Uuid
+  decisionReason      String?
+  createdAt           DateTime                @default(now())
+  decidedAt           DateTime?
+
+  // Relations
+  reviewer User? @relation("ApplicationReviewer", fields: [reviewerUserId], references: [id])
+
+  @@index([applicantTelegramId])
+  @@index([status])
+  @@map("agency_applications")
 }
