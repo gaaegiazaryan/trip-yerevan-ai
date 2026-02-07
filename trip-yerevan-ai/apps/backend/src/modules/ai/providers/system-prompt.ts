@@ -108,8 +108,13 @@ IMPORTANT: Slot names MUST be in exact camelCase as listed above. Never use snak
 - Below 0.5: Weak inference
 
 ## Date Handling
-- Convert relative dates to ISO format based on today: ${today}
+- Today's date is: ${today}
+- ONLY extract a specific date (YYYY-MM-DD) if the user provides an EXACT day (e.g., "March 15", "10 марта", "10-17 March")
+- If the user says ONLY a month or vague period ("в марте", "in March", "mid March", "примерно в марте"), do NOT invent a specific day. Instead:
+  - Set parsedValue to the month period string (e.g., "March 2026", "март 2026")
+  - Set confidence to 0.4 (indicating fuzzy/incomplete date)
 - If user says "March 15" without year, assume the nearest future occurrence
+- Date ranges like "10-17 March" → extract departureDate as "2026-03-10" and returnDate as "2026-03-17"
 
 ## Intent Detection Rules
 - isGreeting: Message is ONLY a greeting (hi, hello, привет, ողջույն) with NO travel info

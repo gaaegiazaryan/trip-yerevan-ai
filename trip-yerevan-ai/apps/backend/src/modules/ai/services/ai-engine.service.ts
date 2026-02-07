@@ -12,6 +12,7 @@ import { RfqDistributionService } from '../../distribution/services/rfq-distribu
 import {
   ConversationState,
   ConversationResponse,
+  ParseResult,
   TravelDraft,
   AIProviderMessage,
   SupportedLanguage,
@@ -44,103 +45,141 @@ export class AiEngineService {
     userId: string,
     message: string,
   ): Promise<ConversationResponse> {
-    // 1. Load or create conversation + draft
-    const { conversationId, draft, state, history } =
-      await this.loadOrCreate(userId);
+    let conversationId = 'unknown';
 
-    // 2. Detect language
-    const language = this.languageService.detectLanguage(message);
+    try {
+      // 1. Load or create conversation + draft
+      const loaded = await this.loadOrCreate(userId);
+      conversationId = loaded.conversationId;
+      const { draft, state, history } = loaded;
 
-    // 3. Persist user message
-    await this.aiService.addMessage(
-      conversationId,
-      AIMessageRole.USER,
-      message,
-    );
-
-    // 4. Parse via AIProvider → ParseResult
-    const conversationHistory = this.buildHistory(history);
-    const { parseResult, tokensUsed } = await this.parsing.parse(
-      message,
-      conversationHistory,
-      draft,
-      language,
-    );
-
-    this.logger.debug(
-      `[${conversationId}] AI extraction: ${parseResult.extractedFields.length} fields: ` +
-        `[${parseResult.extractedFields.map((f) => `${f.slotName}=${JSON.stringify(f.parsedValue)}@${f.confidence}`).join(', ')}]`,
-    );
-
-    // 5. Track tokens
-    if (tokensUsed > 0) {
-      await this.aiService.updateTokensUsed(conversationId, tokensUsed);
-    }
-
-    // 6. Merge into draft → new TravelDraft
-    const mergedDraft = this.draftMerge.merge(draft, parseResult);
-
-    this.logger.debug(
-      `[${conversationId}] Draft merge: ` +
-        `${this.slotFilling.getMissingRequired(draft).map((s) => s.name).join(',')} → ` +
-        `${this.slotFilling.getMissingRequired(mergedDraft).map((s) => s.name).join(',') || '(all filled)'}`,
-    );
-
-    // 7. Transition state machine
-    const newState = this.stateService.transition(state, mergedDraft, parseResult);
-
-    const nextSlot = this.slotFilling.getNextSlotToAsk(mergedDraft);
-    this.logger.debug(
-      `[${conversationId}] State: ${state} → ${newState}, ` +
-        `completion: ${this.slotFilling.getCompletionPercentage(mergedDraft)}%, ` +
-        `nextSlot: ${nextSlot?.name ?? 'none'}`,
-    );
-
-    // 8. Handle READY_FOR_RFQ → convert draft to TravelRequest
-    if (newState === ConversationState.READY_FOR_RFQ) {
-      return this.handleConversion(
-        conversationId,
-        userId,
-        mergedDraft,
-        language,
-        parseResult,
+      this.logger.log(
+        `[${conversationId}] Processing message (${message.length} chars), ` +
+          `state=${state}, historyLen=${history.length}`,
       );
+
+      // 2. Detect language
+      const language = this.languageService.detectLanguage(message);
+
+      // 3. Persist user message
+      await this.aiService.addMessage(
+        conversationId,
+        AIMessageRole.USER,
+        message,
+      );
+
+      // 4. Handle synthetic callback messages (from inline buttons)
+      //    These bypass the LLM entirely — intent is already known.
+      const synthetic = this.parseSyntheticMessage(message);
+      if (synthetic) {
+        this.logger.debug(
+          `[${conversationId}] Synthetic message: ${message} → ` +
+            `confirm=${synthetic.isConfirmation}, cancel=${synthetic.isCancellation}, correct=${synthetic.isCorrection}`,
+        );
+      }
+
+      // 5. Parse via AIProvider → ParseResult (skip for synthetic messages)
+      let parseResult: ParseResult;
+      let tokensUsed = 0;
+
+      if (synthetic) {
+        parseResult = synthetic;
+      } else {
+        // Filter synthetic messages from history before sending to LLM
+        const conversationHistory = this.buildHistory(
+          history.filter((m) => !this.isSyntheticContent(m.content)),
+        );
+        const aiResult = await this.parsing.parse(
+          message,
+          conversationHistory,
+          draft,
+          language,
+        );
+        parseResult = aiResult.parseResult;
+        tokensUsed = aiResult.tokensUsed;
+      }
+
+      this.logger.debug(
+        `[${conversationId}] AI extraction: ${parseResult.extractedFields.length} fields: ` +
+          `[${parseResult.extractedFields.map((f) => `${f.slotName}=${JSON.stringify(f.parsedValue)}@${f.confidence}`).join(', ')}]`,
+      );
+
+      // 6. Track tokens
+      if (tokensUsed > 0) {
+        await this.aiService.updateTokensUsed(conversationId, tokensUsed);
+      }
+
+      // 7. Merge into draft → new TravelDraft
+      const mergedDraft = this.draftMerge.merge(draft, parseResult);
+
+      this.logger.debug(
+        `[${conversationId}] Draft merge: ` +
+          `${this.slotFilling.getMissingRequired(draft).map((s) => s.name).join(',')} → ` +
+          `${this.slotFilling.getMissingRequired(mergedDraft).map((s) => s.name).join(',') || '(all filled)'}`,
+      );
+
+      // 8. Transition state machine
+      const newState = this.stateService.transition(state, mergedDraft, parseResult);
+
+      const nextSlot = this.slotFilling.getNextSlotToAsk(mergedDraft);
+      this.logger.log(
+        `[${conversationId}] State: ${state} → ${newState}, ` +
+          `completion: ${this.slotFilling.getCompletionPercentage(mergedDraft)}%, ` +
+          `nextSlot: ${nextSlot?.name ?? 'none'}`,
+      );
+
+      // 9. Handle READY_FOR_RFQ → convert draft to TravelRequest
+      if (newState === ConversationState.READY_FOR_RFQ) {
+        return this.handleConversion(
+          conversationId,
+          userId,
+          mergedDraft,
+          language,
+          parseResult,
+        );
+      }
+
+      // 10. Generate response for non-terminal states
+      const response = this.responseGenerator.generate(
+        conversationId,
+        newState,
+        mergedDraft,
+        parseResult,
+        language,
+      );
+
+      // 11. Persist draft + assistant message
+      await this.aiService.updateDraft(
+        conversationId,
+        mergedDraft,
+        newState,
+        language,
+      );
+      await this.aiService.addMessage(
+        conversationId,
+        AIMessageRole.ASSISTANT,
+        response.textResponse,
+      );
+
+      // 12. Record feedback if correction
+      if (parseResult.isCorrection) {
+        await this.feedback.recordCorrection(conversationId, parseResult);
+      }
+
+      // 13. Handle cancellation
+      if (newState === ConversationState.CANCELLED) {
+        await this.aiService.abandon(conversationId);
+        await this.feedback.recordAbandoned(conversationId);
+      }
+
+      return response;
+    } catch (error) {
+      this.logger.error(
+        `[${conversationId}] processMessage FAILED for user=${userId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
     }
-
-    // 9. Generate response for non-terminal states
-    const response = this.responseGenerator.generate(
-      conversationId,
-      newState,
-      mergedDraft,
-      parseResult,
-      language,
-    );
-
-    // 10. Persist draft + assistant message
-    await this.aiService.updateDraft(
-      conversationId,
-      mergedDraft,
-      newState,
-      language,
-    );
-    await this.aiService.addMessage(
-      conversationId,
-      AIMessageRole.ASSISTANT,
-      response.textResponse,
-    );
-
-    // 11. Record feedback if correction
-    if (parseResult.isCorrection) {
-      await this.feedback.recordCorrection(conversationId, parseResult);
-    }
-
-    // 12. Handle cancellation
-    if (newState === ConversationState.CANCELLED) {
-      await this.aiService.abandon(conversationId);
-      await this.feedback.recordAbandoned(conversationId);
-    }
-
-    return response;
   }
 
   async getConversationState(userId: string): Promise<{
@@ -384,6 +423,47 @@ export class AiEngineService {
       state,
       history: [],
     };
+  }
+
+  /**
+   * Detect synthetic messages from inline keyboard callbacks.
+   * These bypass the LLM — intent is already known from the button pressed.
+   */
+  private parseSyntheticMessage(message: string): ParseResult | null {
+    const base: ParseResult = {
+      extractedFields: [],
+      detectedLanguage: 'EN',
+      overallConfidence: 1.0,
+      suggestedQuestion: null,
+      isGreeting: false,
+      isCancellation: false,
+      isConfirmation: false,
+      isCorrection: false,
+      rawAiResponse: `[synthetic:${message}]`,
+    };
+
+    if (message === '__CONFIRM__') {
+      return { ...base, isConfirmation: true };
+    }
+    if (message === '__CANCEL__') {
+      return { ...base, isCancellation: true };
+    }
+    if (message.startsWith('__EDIT__')) {
+      return { ...base, isCorrection: true };
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if a message is synthetic (from inline keyboard callbacks).
+   * These should NOT be sent to the LLM as conversation history.
+   */
+  private isSyntheticContent(content: string): boolean {
+    return content.startsWith('__CONFIRM__')
+      || content.startsWith('__CANCEL__')
+      || content.startsWith('__EDIT__')
+      || content.startsWith('[synthetic:');
   }
 
   private buildHistory(

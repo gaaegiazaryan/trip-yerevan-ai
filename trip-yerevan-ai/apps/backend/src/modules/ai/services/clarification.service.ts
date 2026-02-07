@@ -67,7 +67,12 @@ export class ClarificationService {
     if (draft.returnDate.value) lines.push(`${label.return}: ${draft.returnDate.value}`);
     if (draft.adults.value) lines.push(`${label.adults}: ${draft.adults.value}`);
     if (draft.children.value) lines.push(`${label.children}: ${draft.children.value}`);
-    if (draft.childrenAges.value?.length) lines.push(`${label.childrenAges}: ${draft.childrenAges.value.join(', ')}`);
+    if (draft.childrenAges.value) {
+      const ages = Array.isArray(draft.childrenAges.value)
+        ? draft.childrenAges.value.join(', ')
+        : String(draft.childrenAges.value);
+      if (ages) lines.push(`${label.childrenAges}: ${ages}`);
+    }
     if (draft.infants.value) lines.push(`${label.infants}: ${draft.infants.value}`);
     if (draft.tripType.value) {
       const displayType = TRIP_TYPE_DISPLAY[draft.tripType.value]?.[lang] ?? draft.tripType.value;
@@ -77,7 +82,12 @@ export class ClarificationService {
       const currency = draft.currency.value ?? 'USD';
       lines.push(`${label.budget}: ${draft.budgetMin.value ? `${draft.budgetMin.value}-` : ''}${draft.budgetMax.value} ${currency}`);
     }
-    if (draft.preferences.value?.length) lines.push(`${label.preferences}: ${draft.preferences.value.join(', ')}`);
+    if (draft.preferences.value) {
+      const prefs = Array.isArray(draft.preferences.value)
+        ? draft.preferences.value.join(', ')
+        : String(draft.preferences.value);
+      if (prefs) lines.push(`${label.preferences}: ${prefs}`);
+    }
     if (draft.notes.value) lines.push(`${label.notes}: ${draft.notes.value}`);
 
     const confirm = this.language.getTemplate('confirm_summary', lang);

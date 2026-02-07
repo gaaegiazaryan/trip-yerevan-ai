@@ -22,6 +22,11 @@ export class AnthropicProvider extends BaseAiProvider {
   ): Promise<AIProviderResponse> {
     const messages = this.buildMessages(conversationHistory, userMessage);
 
+    this.logger.debug(
+      `[Anthropic] Calling API: model=${this.model}, messagesCount=${messages.length}, ` +
+        `systemPromptLen=${systemPrompt.length}`,
+    );
+
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 2048,
@@ -39,6 +44,14 @@ export class AnthropicProvider extends BaseAiProvider {
       `[Anthropic] tokens: input=${response.usage?.input_tokens ?? 0}, ` +
         `output=${response.usage?.output_tokens ?? 0}, total=${tokensUsed}`,
     );
+
+    if (!content || content.trim().length === 0) {
+      this.logger.warn(
+        `[Anthropic] Empty content response. stop_reason=${response.stop_reason}, ` +
+          `contentBlocks=${response.content.length}, ` +
+          `types=[${response.content.map((b) => b.type).join(',')}]`,
+      );
+    }
 
     return {
       content,

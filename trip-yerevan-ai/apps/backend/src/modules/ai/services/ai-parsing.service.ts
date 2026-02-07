@@ -93,11 +93,22 @@ export class AiParsingService {
     currentDraft: TravelDraft,
     language: SupportedLanguage,
   ): Promise<{ parseResult: ParseResult; tokensUsed: number }> {
+    this.logger.debug(
+      `Calling provider.parseMessage: msg="${userMessage.slice(0, 80)}", ` +
+        `historyLen=${conversationHistory.length}, lang=${language}`,
+    );
+
     const response = await this.provider.parseMessage(
       userMessage,
       conversationHistory,
       currentDraft,
       language,
+    );
+
+    this.logger.debug(
+      `Provider response: ${response.content.length} chars, ` +
+        `tokens=${response.tokensUsed}, model=${response.model}, ` +
+        `first100="${response.content.slice(0, 100)}"`,
     );
 
     const parseResult = this.parseResponse(response.content);
@@ -112,36 +123,57 @@ export class AiParsingService {
   }
 
   private parseResponse(content: string): ParseResult {
+    const fallback: ParseResult = {
+      extractedFields: [],
+      detectedLanguage: 'EN',
+      overallConfidence: 0,
+      suggestedQuestion: null,
+      isGreeting: false,
+      isCancellation: false,
+      isConfirmation: false,
+      isCorrection: false,
+      rawAiResponse: content,
+    };
+
+    let cleaned: string;
     try {
-      const cleaned = this.extractJson(content);
-      const raw = JSON.parse(cleaned);
+      cleaned = this.extractJson(content);
+    } catch (error) {
+      this.logger.warn(
+        `extractJson failed (${content.length} chars): ${error}`,
+      );
+      return fallback;
+    }
+
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(cleaned);
+    } catch (error) {
+      this.logger.warn(
+        `JSON.parse failed: ${error}. ` +
+          `Content (${content.length} chars), first 300: "${content.slice(0, 300)}"`,
+      );
+      return fallback;
+    }
+
+    try {
       return {
-        extractedFields: this.validateFields(raw.extractedFields ?? []),
-        detectedLanguage: raw.detectedLanguage ?? 'EN',
-        overallConfidence: raw.overallConfidence ?? 0,
-        suggestedQuestion: raw.suggestedQuestion ?? null,
+        extractedFields: this.validateFields(raw.extractedFields as unknown[] ?? []),
+        detectedLanguage: (raw.detectedLanguage as SupportedLanguage) ?? 'EN',
+        overallConfidence: (raw.overallConfidence as number) ?? 0,
+        suggestedQuestion: (raw.suggestedQuestion as string) ?? null,
         isGreeting: Boolean(raw.isGreeting),
         isCancellation: Boolean(raw.isCancellation),
         isConfirmation: Boolean(raw.isConfirmation),
         isCorrection: Boolean(raw.isCorrection),
         rawAiResponse: content,
       };
-    } catch {
-      this.logger.warn(
-        `Failed to parse AI response (${content.length} chars), ` +
-          `first 200: ${content.slice(0, 200)}`,
+    } catch (error) {
+      this.logger.error(
+        `validateFields failed: ${error}. ` +
+          `Raw fields: ${JSON.stringify(raw.extractedFields)?.slice(0, 500)}`,
       );
-      return {
-        extractedFields: [],
-        detectedLanguage: 'EN',
-        overallConfidence: 0,
-        suggestedQuestion: null,
-        isGreeting: false,
-        isCancellation: false,
-        isConfirmation: false,
-        isCorrection: false,
-        rawAiResponse: content,
-      };
+      return fallback;
     }
   }
 
@@ -224,14 +256,84 @@ export class AiParsingService {
       const normalized = this.normalizeSlotName(String(f.slotName));
       if (!normalized) continue;
 
+      const rawValue = String(f.rawValue ?? '');
+      let parsedValue = this.normalizeFieldValue(normalized, f.parsedValue ?? null);
+      let confidence = typeof f.confidence === 'number' ? f.confidence : 0;
+
+      // Post-process dates: detect hallucinated specific dates from vague input
+      if ((normalized === 'departureDate' || normalized === 'returnDate') && typeof parsedValue === 'string') {
+        const dateCheck = this.validateDateExtraction(rawValue, parsedValue, confidence);
+        parsedValue = dateCheck.parsedValue;
+        confidence = dateCheck.confidence;
+      }
+
       result.push({
         slotName: normalized as ExtractedField['slotName'],
-        rawValue: String(f.rawValue ?? ''),
-        parsedValue: this.normalizeFieldValue(normalized, f.parsedValue ?? null),
-        confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+        rawValue,
+        parsedValue,
+        confidence,
       });
     }
 
     return result;
+  }
+
+  /**
+   * Detect when the LLM hallucinated a specific date from vague user input.
+   * If rawValue has no explicit day number but parsedValue is a full ISO date,
+   * downgrade to a fuzzy period string with low confidence.
+   */
+  private validateDateExtraction(
+    rawValue: string,
+    parsedValue: string,
+    confidence: number,
+  ): { parsedValue: unknown; confidence: number } {
+    // If already a fuzzy period (not ISO date), pass through
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(parsedValue)) {
+      return { parsedValue, confidence };
+    }
+
+    // Check if rawValue contains an explicit day number (1-31)
+    // Match standalone numbers that look like day-of-month
+    const hasExplicitDay = /(?:^|\s|-)(\d{1,2})(?:\s|$|[-./])/.test(rawValue)
+      && this.extractDayFromRaw(rawValue);
+
+    if (hasExplicitDay) {
+      // User gave a specific day — trust the LLM's ISO date
+      return { parsedValue, confidence };
+    }
+
+    // Vague input — LLM invented a specific day. Downgrade to fuzzy period.
+    const date = new Date(parsedValue + 'T00:00:00');
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+    const fuzzy = `${monthNames[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+
+    this.logger.debug(
+      `Date hallucination detected: raw="${rawValue}" → "${parsedValue}" downgraded to "${fuzzy}"`,
+    );
+
+    return { parsedValue: fuzzy, confidence: 0.4 };
+  }
+
+  /**
+   * Check if the raw user input contains an actual day-of-month reference.
+   * Filters out numbers that are clearly years (2025, 2026) or other non-day values.
+   */
+  private extractDayFromRaw(rawValue: string): boolean {
+    // Match numbers in the raw value
+    const numbers = rawValue.match(/\d+/g);
+    if (!numbers) return false;
+
+    for (const num of numbers) {
+      const n = parseInt(num, 10);
+      // Day-of-month: 1-31, but not a year (>= 2000)
+      if (n >= 1 && n <= 31 && num.length <= 2) {
+        return true;
+      }
+    }
+    return false;
   }
 }
