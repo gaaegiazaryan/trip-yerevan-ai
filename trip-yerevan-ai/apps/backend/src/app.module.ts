@@ -6,6 +6,9 @@ import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/queue/queue.module';
 import { LoggerModule } from './infra/logger/logger.module';
 
+// Platform modules
+import { HealthModule } from './modules/health/health.module';
+
 // Domain modules
 import { UsersModule } from './modules/users/users.module';
 import { AgenciesModule } from './modules/agencies/agencies.module';
@@ -19,12 +22,18 @@ import { TelegramModule } from './modules/telegram/telegram.module';
 @Module({
   imports: [
     // Config
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
 
     // Infrastructure
     PrismaModule,
     QueueModule,
     LoggerModule,
+
+    // Platform
+    HealthModule,
 
     // Domain
     UsersModule,
