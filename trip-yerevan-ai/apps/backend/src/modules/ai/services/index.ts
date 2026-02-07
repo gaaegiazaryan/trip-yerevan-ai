@@ -6,4 +6,6 @@ export { ClarificationService } from './clarification.service';
 export { AiParsingService } from './ai-parsing.service';
 export { ResponseGeneratorService } from './response-generator.service';
 export { FeedbackService } from './feedback.service';
+export { DraftValidationService } from './draft-validation.service';
+export { DraftToRequestService } from './draft-to-request.service';
 export { AiEngineService } from './ai-engine.service';

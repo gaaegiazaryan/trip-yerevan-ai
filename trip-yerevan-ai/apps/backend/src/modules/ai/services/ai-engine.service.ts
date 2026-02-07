@@ -7,6 +7,8 @@ import { ConversationStateService } from './conversation-state.service';
 import { ResponseGeneratorService } from './response-generator.service';
 import { LanguageService } from './language.service';
 import { FeedbackService } from './feedback.service';
+import { DraftToRequestService, ConversionResult } from './draft-to-request.service';
+import { RfqDistributionService } from '../../distribution/services/rfq-distribution.service';
 import {
   ConversationState,
   ConversationResponse,
@@ -16,6 +18,10 @@ import {
   createEmptyDraft,
 } from '../types';
 import { AIMessageRole, AIModel } from '@prisma/client';
+import {
+  DraftValidationException,
+  DraftConversionException,
+} from '../../../common/exceptions/domain.exception';
 
 @Injectable()
 export class AiEngineService {
@@ -30,6 +36,8 @@ export class AiEngineService {
     private readonly responseGenerator: ResponseGeneratorService,
     private readonly languageService: LanguageService,
     private readonly feedback: FeedbackService,
+    private readonly draftToRequest: DraftToRequestService,
+    private readonly rfqDistribution: RfqDistributionService,
   ) {}
 
   async processMessage(
@@ -75,7 +83,18 @@ export class AiEngineService {
         `slots: ${this.slotFilling.getCompletionPercentage(mergedDraft)}%`,
     );
 
-    // 8. Generate response
+    // 8. Handle READY_FOR_RFQ → convert draft to TravelRequest
+    if (newState === ConversationState.READY_FOR_RFQ) {
+      return this.handleConversion(
+        conversationId,
+        userId,
+        mergedDraft,
+        language,
+        parseResult,
+      );
+    }
+
+    // 9. Generate response for non-terminal states
     const response = this.responseGenerator.generate(
       conversationId,
       newState,
@@ -84,7 +103,7 @@ export class AiEngineService {
       language,
     );
 
-    // 9. Persist draft + assistant message
+    // 10. Persist draft + assistant message
     await this.aiService.updateDraft(
       conversationId,
       mergedDraft,
@@ -97,12 +116,12 @@ export class AiEngineService {
       response.textResponse,
     );
 
-    // 10. Record feedback if correction
+    // 11. Record feedback if correction
     if (parseResult.isCorrection) {
       await this.feedback.recordCorrection(conversationId, parseResult);
     }
 
-    // 11. Handle terminal states
+    // 12. Handle cancellation
     if (newState === ConversationState.CANCELLED) {
       await this.aiService.abandon(conversationId);
       await this.feedback.recordAbandoned(conversationId);
@@ -137,6 +156,186 @@ export class AiEngineService {
         ? this.slotFilling.getCompletionPercentage(draft)
         : 0,
     };
+  }
+
+  /**
+   * Handles the critical READY_FOR_RFQ → COMPLETED transition:
+   *   1. Validate + convert draft to TravelRequest (in transaction)
+   *   2. Trigger RFQ distribution to agencies
+   *   3. Record booking success feedback
+   *   4. Return confirmed response
+   *
+   * On failure: stay in CONFIRMING_DRAFT, return error response.
+   */
+  private async handleConversion(
+    conversationId: string,
+    userId: string,
+    draft: TravelDraft,
+    language: SupportedLanguage,
+    parseResult: Parameters<typeof this.responseGenerator.generate>[3],
+  ): Promise<ConversationResponse> {
+    try {
+      // Convert draft → TravelRequest (transaction: create request + complete conversation)
+      const result = await this.draftToRequest.convert(
+        conversationId,
+        userId,
+        draft,
+        language,
+      );
+
+      this.logger.log(
+        `[${conversationId}] Draft converted → TravelRequest ${result.travelRequestId}`,
+      );
+
+      // Trigger distribution (non-blocking for the response)
+      this.distributeInBackground(result);
+
+      // Generate success response
+      const response = this.responseGenerator.generate(
+        conversationId,
+        ConversationState.COMPLETED,
+        draft,
+        parseResult,
+        language,
+      );
+
+      // Persist assistant message (conversation already completed in transaction)
+      await this.aiService.addMessage(
+        conversationId,
+        AIMessageRole.ASSISTANT,
+        response.textResponse,
+      );
+
+      return response;
+
+    } catch (error) {
+      return this.handleConversionFailure(
+        error,
+        conversationId,
+        draft,
+        language,
+        parseResult,
+      );
+    }
+  }
+
+  /**
+   * On conversion failure:
+   *   - Do NOT change conversation state (stays in CONFIRMING_DRAFT)
+   *   - Log structured error
+   *   - Return recoverable response asking user to try again
+   */
+  private async handleConversionFailure(
+    error: unknown,
+    conversationId: string,
+    draft: TravelDraft,
+    language: SupportedLanguage,
+    parseResult: Parameters<typeof this.responseGenerator.generate>[3],
+  ): Promise<ConversationResponse> {
+    if (error instanceof DraftValidationException) {
+      this.logger.warn(
+        `[${conversationId}] Draft validation failed: ${error.errors.map((e) => e.field).join(', ')}`,
+      );
+
+      // Stay in CONFIRMING_DRAFT — let user correct
+      const errorText = this.buildValidationErrorText(error, language);
+
+      await this.aiService.updateDraft(
+        conversationId,
+        draft,
+        ConversationState.COLLECTING_DETAILS,
+        language,
+      );
+      await this.aiService.addMessage(
+        conversationId,
+        AIMessageRole.ASSISTANT,
+        errorText,
+      );
+
+      return {
+        conversationId,
+        state: ConversationState.COLLECTING_DETAILS,
+        textResponse: errorText,
+        draft,
+        isComplete: false,
+        suggestedActions: [],
+        language,
+      };
+    }
+
+    if (error instanceof DraftConversionException) {
+      this.logger.error(
+        `[${conversationId}] Draft conversion failed: ${error.message}`,
+      );
+    } else {
+      this.logger.error(
+        `[${conversationId}] Unexpected conversion error: ${error}`,
+      );
+    }
+
+    // Fall back to CONFIRMING_DRAFT — let user retry
+    const fallbackText = this.getFallbackText(language);
+
+    await this.aiService.updateDraft(
+      conversationId,
+      draft,
+      ConversationState.CONFIRMING_DRAFT,
+      language,
+    );
+    await this.aiService.addMessage(
+      conversationId,
+      AIMessageRole.ASSISTANT,
+      fallbackText,
+    );
+
+    return this.responseGenerator.generate(
+      conversationId,
+      ConversationState.CONFIRMING_DRAFT,
+      draft,
+      parseResult,
+      language,
+    );
+  }
+
+  private distributeInBackground(result: ConversionResult): void {
+    this.rfqDistribution
+      .distribute(result.travelRequestId)
+      .then((dist) => {
+        this.logger.log(
+          `[${result.conversationId}] RFQ distributed to ${dist.totalAgenciesMatched} agencies`,
+        );
+      })
+      .catch((err) => {
+        this.logger.error(
+          `[${result.conversationId}] RFQ distribution failed: ${err}`,
+        );
+      });
+  }
+
+  private buildValidationErrorText(
+    error: DraftValidationException,
+    language: SupportedLanguage,
+  ): string {
+    const fieldMessages = error.errors
+      .map((e) => `- ${e.message}`)
+      .join('\n');
+
+    const prefix: Record<SupportedLanguage, string> = {
+      RU: 'Не удалось создать заявку. Пожалуйста, исправьте:',
+      AM: 'Could not create request. Please fix:',
+      EN: 'Could not create the request. Please fix the following:',
+    };
+
+    return `${prefix[language]}\n${fieldMessages}`;
+  }
+
+  private getFallbackText(language: SupportedLanguage): string {
+    const texts: Record<SupportedLanguage, string> = {
+      RU: 'Произошла ошибка при создании заявки. Попробуйте подтвердить ещё раз.',
+      AM: 'An error occurred while creating the request. Please try confirming again.',
+      EN: 'An error occurred while creating the request. Please try confirming again.',
+    };
+    return texts[language];
   }
 
   private async loadOrCreate(userId: string): Promise<{

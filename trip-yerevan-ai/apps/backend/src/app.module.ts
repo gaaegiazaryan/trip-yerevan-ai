@@ -16,6 +16,7 @@ import { TravelRequestsModule } from './modules/travel-requests/travel-requests.
 import { OffersModule } from './modules/offers/offers.module';
 import { ProxyChatModule } from './modules/proxy-chat/proxy-chat.module';
 import { BookingsModule } from './modules/bookings/bookings.module';
+import { DistributionModule } from './modules/distribution/distribution.module';
 import { AiModule } from './modules/ai/ai.module';
 import { TelegramModule } from './modules/telegram/telegram.module';
 
@@ -42,6 +43,7 @@ import { TelegramModule } from './modules/telegram/telegram.module';
     OffersModule,
     ProxyChatModule,
     BookingsModule,
+    DistributionModule,
     AiModule,
     TelegramModule,
   ],

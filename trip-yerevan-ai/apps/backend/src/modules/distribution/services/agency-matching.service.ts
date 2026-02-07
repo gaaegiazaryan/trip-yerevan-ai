@@ -1,0 +1,108 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../../../infra/prisma/prisma.service';
+import { AgencyStatus } from '@prisma/client';
+import { AgencyMatchResult } from '../types';
+
+const MIN_RATING_THRESHOLD = 0;
+
+interface MatchCriteria {
+  destination: string | null;
+  tripType: string | null;
+  regions: string[];
+}
+
+@Injectable()
+export class AgencyMatchingService {
+  private readonly logger = new Logger(AgencyMatchingService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Matches agencies to a travel request using multi-factor scoring:
+   *
+   *   1. Status must be VERIFIED
+   *   2. Rating >= threshold
+   *   3. Score by: region match (+3), specialization match (+2), rating bonus (+0-1)
+   *   4. Sort by score descending
+   *   5. If no scored matches, fall back to all verified agencies
+   *
+   * Returns prioritized list with match reasons.
+   */
+  async match(criteria: MatchCriteria): Promise<AgencyMatchResult[]> {
+    // Fetch all verified agencies above rating threshold
+    const agencies = await this.prisma.agency.findMany({
+      where: {
+        status: AgencyStatus.VERIFIED,
+        rating: { gte: MIN_RATING_THRESHOLD },
+      },
+      orderBy: { rating: 'desc' },
+    });
+
+    if (agencies.length === 0) {
+      this.logger.warn('No verified agencies found for matching');
+      return [];
+    }
+
+    // Score each agency
+    const scored: AgencyMatchResult[] = [];
+
+    for (const agency of agencies) {
+      const reasons: string[] = [];
+      let score = 0;
+
+      // Region match: does agency serve the destination region?
+      if (criteria.destination) {
+        const destLower = criteria.destination.toLowerCase();
+        const regionMatch = agency.regions.some(
+          (r) => r.toLowerCase() === destLower,
+        );
+        if (regionMatch) {
+          score += 3;
+          reasons.push(`region:${criteria.destination}`);
+        }
+      }
+
+      // Specialization match: does agency handle this trip type?
+      if (criteria.tripType) {
+        const specMatch = agency.specializations.some(
+          (s) => s.toLowerCase() === criteria.tripType!.toLowerCase(),
+        );
+        if (specMatch) {
+          score += 2;
+          reasons.push(`specialization:${criteria.tripType}`);
+        }
+      }
+
+      // Rating bonus: normalized 0-1
+      const rating = Number(agency.rating);
+      if (rating > 0) {
+        score += Math.min(rating / 5, 1);
+        reasons.push(`rating:${rating}`);
+      }
+
+      scored.push({
+        agencyId: agency.id,
+        agencyName: agency.name,
+        telegramChatId: agency.telegramChatId,
+        matchScore: score,
+        matchReasons: reasons,
+      });
+    }
+
+    // Sort by score descending, then rating
+    scored.sort((a, b) => b.matchScore - a.matchScore);
+
+    // If no agency scored above 0, return all verified (broadened fallback)
+    const hasScored = scored.some((s) => s.matchScore > 0);
+    const results = hasScored
+      ? scored.filter((s) => s.matchScore > 0)
+      : scored;
+
+    this.logger.debug(
+      `Matched ${results.length}/${agencies.length} agencies ` +
+        `(top: ${results[0]?.agencyName ?? 'none'}, score: ${results[0]?.matchScore ?? 0})`,
+    );
+
+    return results;
+  }
+}

@@ -137,6 +137,14 @@ enum AIModel {
   OPENAI
 }
 
+enum RfqDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  VIEWED
+  RESPONDED
+}
+
 // ============================================================================
 // USERS
 // ============================================================================
@@ -183,10 +191,11 @@ model Agency {
   updatedAt       DateTime     @updatedAt
 
   // Relations
-  agents     AgencyAgent[]
-  offers     Offer[]
-  proxyChats ProxyChat[]
-  bookings   Booking[]
+  agents           AgencyAgent[]
+  offers           Offer[]
+  proxyChats       ProxyChat[]
+  bookings         Booking[]
+  rfqDistributions RfqDistribution[]
 
   @@map("agencies")
 }
@@ -244,11 +253,12 @@ model TravelRequest {
   expiresAt DateTime
 
   // Relations
-  user            User             @relation(fields: [userId], references: [id])
-  offers          Offer[]
-  proxyChats      ProxyChat[]
-  booking         Booking?
-  aiConversation  AIConversation?
+  user              User              @relation(fields: [userId], references: [id])
+  offers            Offer[]
+  proxyChats        ProxyChat[]
+  booking           Booking?
+  aiConversation    AIConversation?
+  rfqDistributions  RfqDistribution[]
 
   @@index([userId])
   @@index([status])
@@ -453,4 +463,31 @@ model AIFeedbackSignal {
   @@index([conversationId])
   @@index([type])
   @@map("ai_feedback_signals")
+}
+
+// ============================================================================
+// RFQ DISTRIBUTION
+// ============================================================================
+
+model RfqDistribution {
+  id               String            @id @default(uuid()) @db.Uuid
+  travelRequestId  String            @db.Uuid
+  agencyId         String            @db.Uuid
+  deliveryStatus   RfqDeliveryStatus @default(PENDING)
+  failureReason    String?
+  notificationPayload Json?
+  distributedAt    DateTime          @default(now())
+  deliveredAt      DateTime?
+  viewedAt         DateTime?
+  respondedAt      DateTime?
+
+  // Relations
+  travelRequest TravelRequest @relation(fields: [travelRequestId], references: [id], onDelete: Cascade)
+  agency        Agency        @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@unique([travelRequestId, agencyId])
+  @@index([travelRequestId])
+  @@index([agencyId])
+  @@index([deliveryStatus])
+  @@map("rfq_distributions")
 }
