@@ -78,6 +78,7 @@ describe('RfqDistributionService', () => {
   let prisma: {
     travelRequest: { findUniqueOrThrow: jest.Mock; update: jest.Mock };
     rfqDistribution: { count: jest.Mock; create: jest.Mock };
+    user: { findUniqueOrThrow: jest.Mock };
     $transaction: jest.Mock;
   };
   let matching: jest.Mocked<AgencyMatchingService>;
@@ -93,6 +94,11 @@ describe('RfqDistributionService', () => {
       rfqDistribution: {
         count: jest.fn().mockResolvedValue(0),
         create: jest.fn(),
+      },
+      user: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          telegramId: BigInt(999000999),
+        }),
       },
       $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
         // Simulate transaction by passing prisma itself as tx
@@ -204,5 +210,35 @@ describe('RfqDistributionService', () => {
     await expect(service.distribute('req-001')).rejects.toThrow(
       'DB connection lost',
     );
+  });
+
+  it('should pass traveler telegramId as excludeChatId to matching', async () => {
+    prisma.user.findUniqueOrThrow.mockResolvedValue({
+      telegramId: BigInt(555666777),
+    });
+
+    await service.distribute('req-001');
+
+    expect(matching.match).toHaveBeenCalledWith(
+      expect.objectContaining({
+        excludeChatId: BigInt(555666777),
+      }),
+    );
+  });
+
+  it('should not distribute to traveler own agency (self-delivery)', async () => {
+    // Traveler's telegramId matches agency-001 telegramChatId
+    prisma.user.findUniqueOrThrow.mockResolvedValue({
+      telegramId: BigInt(123456789),
+    });
+
+    // Matching returns empty because the only agency was excluded
+    matching.match.mockResolvedValue([]);
+
+    const result = await service.distribute('req-001');
+
+    expect(result.totalAgenciesMatched).toBe(0);
+    expect(result.distributionIds).toEqual([]);
+    expect(queue.addBulk).not.toHaveBeenCalled();
   });
 });

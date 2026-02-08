@@ -60,19 +60,25 @@ export class RfqDistributionService {
       };
     }
 
-    // 1. Load request
+    // 1. Load request and traveler
     const request = await this.prisma.travelRequest.findUniqueOrThrow({
       where: { id: travelRequestId },
+    });
+
+    const traveler = await this.prisma.user.findUniqueOrThrow({
+      where: { id: request.userId },
+      select: { telegramId: true },
     });
 
     // 2. Build notification payload
     const notification = this.notificationBuilder.build(request);
 
-    // 3. Match agencies
+    // 3. Match agencies (excludes traveler's own chatId to prevent self-delivery)
     const matchedAgencies = await this.matching.match({
       destination: request.destination,
       tripType: request.tripType,
       regions: request.destination ? [request.destination] : [],
+      excludeChatId: traveler.telegramId,
     });
 
     if (matchedAgencies.length === 0) {

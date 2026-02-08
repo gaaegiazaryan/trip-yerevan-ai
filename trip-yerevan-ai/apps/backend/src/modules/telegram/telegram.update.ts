@@ -13,6 +13,7 @@ import { TelegramRateLimiter } from './telegram-rate-limiter';
 import { OfferWizardService } from '../offers/offer-wizard.service';
 import { isOfferSubmitResult } from '../offers/offer-wizard.types';
 import { AgencyApplicationService } from '../agencies/agency-application.service';
+import { AgenciesService } from '../agencies/agencies.service';
 import {
   getTelegramMessage,
   prismaLanguageToSupported,
@@ -34,6 +35,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly rateLimiter: TelegramRateLimiter,
     private readonly offerWizard: OfferWizardService,
     private readonly agencyApp: AgencyApplicationService,
+    private readonly agenciesService: AgenciesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -173,6 +175,15 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
         await this.telegramService.sendMessage(
           chatId,
           getTelegramMessage('error_not_registered', 'RU'),
+        );
+        return;
+      }
+
+      // Block agency agents from creating travel requests
+      if (await this.agenciesService.isActiveAgent(telegramId)) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'Agency accounts cannot create travel requests. Use /agency for agency features.',
         );
         return;
       }
