@@ -5,12 +5,28 @@ import { AgencyMatchResult } from '../types';
 
 const MIN_RATING_THRESHOLD = 0;
 
+/** Reasons an agency was rejected during matching. */
+enum RejectionReason {
+  MISSING_CHAT_ID = 'MISSING_CHAT_ID',
+  SELF_DELIVERY_FILTER = 'SELF_DELIVERY_FILTER',
+  NO_ACTIVE_AGENTS = 'NO_ACTIVE_AGENTS',
+  REGION_MISMATCH = 'REGION_MISMATCH',
+  SPECIALIZATION_MISMATCH = 'SPECIALIZATION_MISMATCH',
+  NORMALIZATION_MISMATCH = 'NORMALIZATION_MISMATCH',
+}
+
 interface MatchCriteria {
   destination: string | null;
   tripType: string | null;
   regions: string[];
   /** Exclude agencies whose telegramChatId matches this value (self-delivery prevention). */
   excludeChatId?: bigint;
+}
+
+interface RejectedAgency {
+  agencyId: string;
+  reason: RejectionReason;
+  detail: string;
 }
 
 @Injectable()
@@ -27,12 +43,21 @@ export class AgencyMatchingService {
    *   3. Must have at least one active AgencyAgent
    *   4. Must NOT match excludeChatId (self-delivery prevention)
    *   5. Score by: region match (+3), specialization match (+2), rating bonus (+0-1)
+   *      Scoring is ADDITIVE (OR) — an agency does NOT need both region AND specialization
    *   6. Sort by score descending
    *   7. If no scored matches, fall back to all eligible agencies
    *
    * Returns prioritized list with match reasons.
    */
   async match(criteria: MatchCriteria): Promise<AgencyMatchResult[]> {
+    // TASK 1 — Log request input
+    this.logger.log(
+      `[match-input] destination="${criteria.destination}", ` +
+        `tripType="${criteria.tripType}", ` +
+        `regions=[${criteria.regions.join(', ')}], ` +
+        `excludeChatId=${criteria.excludeChatId ?? 'none'}`,
+    );
+
     // Fetch all approved agencies above rating threshold, with active agents
     const agencies = await this.prisma.agency.findMany({
       where: {
@@ -49,15 +74,35 @@ export class AgencyMatchingService {
     });
 
     if (agencies.length === 0) {
-      this.logger.warn('No approved agencies found for matching');
+      this.logger.warn('[match-result] No approved agencies found in database');
       return [];
     }
 
-    // Filter out ineligible agencies
+    this.logger.debug(
+      `[match-db] Loaded ${agencies.length} approved agencies from database`,
+    );
+
+    // Filter out ineligible agencies — track rejections for debug summary
+    const rejected: RejectedAgency[] = [];
     const eligible = agencies.filter((agency) => {
+      // TASK 2 — Log each agency evaluation
+      this.logger.debug(
+        `[match-eval] agencyId=${agency.id}, name="${agency.name}", ` +
+          `status=${agency.status}, ` +
+          `regions=[${agency.regions.join(', ')}], ` +
+          `specializations=[${agency.specializations.join(', ')}], ` +
+          `telegramChatId=${agency.telegramChatId ?? 'null'}, ` +
+          `activeAgents=${agency.agents.length}`,
+      );
+
       if (!agency.telegramChatId) {
+        rejected.push({
+          agencyId: agency.id,
+          reason: RejectionReason.MISSING_CHAT_ID,
+          detail: 'telegramChatId is null',
+        });
         this.logger.warn(
-          `[agency-skip] agencyId=${agency.id}: missing telegramChatId`,
+          `[agency-reject] agencyId=${agency.id}: ${RejectionReason.MISSING_CHAT_ID} — telegramChatId is null`,
         );
         return false;
       }
@@ -66,15 +111,25 @@ export class AgencyMatchingService {
         criteria.excludeChatId &&
         agency.telegramChatId === criteria.excludeChatId
       ) {
+        rejected.push({
+          agencyId: agency.id,
+          reason: RejectionReason.SELF_DELIVERY_FILTER,
+          detail: `chatId=${agency.telegramChatId} matches traveler`,
+        });
         this.logger.warn(
-          `[agency-skip] agencyId=${agency.id}: same chatId as traveler (self-delivery prevented)`,
+          `[agency-reject] agencyId=${agency.id}: ${RejectionReason.SELF_DELIVERY_FILTER} — chatId=${agency.telegramChatId} matches traveler`,
         );
         return false;
       }
 
       if (agency.agents.length === 0) {
+        rejected.push({
+          agencyId: agency.id,
+          reason: RejectionReason.NO_ACTIVE_AGENTS,
+          detail: 'no active AgencyAgent records',
+        });
         this.logger.warn(
-          `[agency-skip] agencyId=${agency.id}: no active agents`,
+          `[agency-reject] agencyId=${agency.id}: ${RejectionReason.NO_ACTIVE_AGENTS} — no active AgencyAgent records`,
         );
         return false;
       }
@@ -83,8 +138,10 @@ export class AgencyMatchingService {
     });
 
     if (eligible.length === 0) {
+      // TASK 6 — Debug summary on zero match
       this.logger.warn(
-        `All ${agencies.length} approved agencies filtered out — no eligible recipients`,
+        `[match-result] All ${agencies.length} approved agencies rejected. ` +
+          `Rejections: ${rejected.map((r) => `${r.agencyId}:${r.reason}`).join(', ')}`,
       );
       return [];
     }
@@ -92,30 +149,49 @@ export class AgencyMatchingService {
     // Score each eligible agency
     const scored: AgencyMatchResult[] = [];
 
+    // TASK 4 — Normalize destination and tripType once (trim + lowercase)
+    const destNorm = criteria.destination?.toLowerCase().trim() ?? null;
+    const tripTypeNorm = criteria.tripType?.toLowerCase().trim() ?? null;
+
     for (const agency of eligible) {
       const reasons: string[] = [];
       let score = 0;
 
+      // TASK 4 — Normalize agency regions and specializations
+      const agencyRegionsNorm = agency.regions.map((r) =>
+        r.toLowerCase().trim(),
+      );
+      const agencySpecsNorm = agency.specializations.map((s) =>
+        s.toLowerCase().trim(),
+      );
+
       // Region match: does agency serve the destination region?
-      if (criteria.destination) {
-        const destLower = criteria.destination.toLowerCase();
-        const regionMatch = agency.regions.some(
-          (r) => r.toLowerCase() === destLower,
-        );
+      if (destNorm) {
+        const regionMatch = agencyRegionsNorm.some((r) => r === destNorm);
         if (regionMatch) {
           score += 3;
           reasons.push(`region:${criteria.destination}`);
+        } else {
+          // TASK 3 — Log region mismatch detail
+          this.logger.debug(
+            `[match-score] agencyId=${agency.id}: ${RejectionReason.REGION_MISMATCH} — ` +
+              `dest="${criteria.destination}" not in regions=[${agency.regions.join(', ')}]`,
+          );
         }
       }
 
       // Specialization match: does agency handle this trip type?
-      if (criteria.tripType) {
-        const specMatch = agency.specializations.some(
-          (s) => s.toLowerCase() === criteria.tripType!.toLowerCase(),
-        );
+      if (tripTypeNorm) {
+        const specMatch = agencySpecsNorm.some((s) => s === tripTypeNorm);
         if (specMatch) {
           score += 2;
           reasons.push(`specialization:${criteria.tripType}`);
+        } else {
+          // TASK 3 — Log specialization mismatch detail
+          this.logger.debug(
+            `[match-score] agencyId=${agency.id}: ${RejectionReason.SPECIALIZATION_MISMATCH} — ` +
+              `tripType="${criteria.tripType}" not in specializations=[${agency.specializations.join(', ')}]`,
+          );
         }
       }
 
@@ -144,10 +220,19 @@ export class AgencyMatchingService {
       ? scored.filter((s) => s.matchScore > 0)
       : scored;
 
-    this.logger.debug(
-      `Matched ${results.length}/${agencies.length} agencies ` +
-        `(eligible: ${eligible.length}, ` +
-        `top: ${results[0]?.agencyName ?? 'none'}, score: ${results[0]?.matchScore ?? 0})`,
+    // TASK 6 — Debug summary
+    const matchedIds = results.map((r) => r.agencyId);
+    const rejectedIds = rejected.map((r) => `${r.agencyId}(${r.reason})`);
+    const zeroScoreIds = scored
+      .filter((s) => s.matchScore === 0 && hasScored)
+      .map((s) => `${s.agencyId}(score=0)`);
+
+    this.logger.log(
+      `[match-result] input: destination="${criteria.destination}", tripType="${criteria.tripType}" | ` +
+        `db=${agencies.length}, eligible=${eligible.length}, matched=${results.length} | ` +
+        `matched=[${matchedIds.join(', ')}] | ` +
+        `rejected=[${[...rejectedIds, ...zeroScoreIds].join(', ') || 'none'}] | ` +
+        `fallback=${!hasScored}`,
     );
 
     return results;

@@ -158,6 +158,36 @@ describe('AgencyMatchingService', () => {
     expect(results[1].matchScore).toBeCloseTo(2.4, 1);
   });
 
+  it('should match regions and specializations despite whitespace/case differences (normalization)', async () => {
+    prisma.agency.findMany.mockResolvedValue([
+      createMockAgency({
+        id: 'agency-ws',
+        regions: ['  Dubai ', 'EGYPT'],
+        specializations: [' Package '],
+        rating: 4.0,
+        telegramChatId: BigInt(300),
+        agents: [{ id: 'a3' }],
+      }),
+    ]);
+
+    const results = await service.match({
+      destination: 'dubai',
+      tripType: 'PACKAGE',
+      regions: ['dubai'],
+    });
+
+    // Should match despite "  Dubai " vs "dubai" and " Package " vs "PACKAGE"
+    expect(results.length).toBe(1);
+    expect(results[0].agencyId).toBe('agency-ws');
+    expect(results[0].matchScore).toBeGreaterThanOrEqual(5); // region(3) + spec(2)
+    expect(results[0].matchReasons).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('region:'),
+        expect.stringContaining('specialization:'),
+      ]),
+    );
+  });
+
   it('should return all eligible when no agency scores above 0', async () => {
     prisma.agency.findMany.mockResolvedValue([
       createMockAgency({

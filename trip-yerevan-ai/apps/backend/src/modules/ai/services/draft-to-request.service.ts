@@ -88,6 +88,11 @@ export class DraftToRequestService {
       Date.now() + DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
     );
 
+    this.logger.log(
+      `[draft-convert] destination="${draft.destination.value}" ` +
+        `(conversation: ${conversationId}, user: ${userId})`,
+    );
+
     try {
       // 4. Execute in transaction
       const result = await this.prisma.$transaction(async (tx) => {
@@ -131,7 +136,8 @@ export class DraftToRequestService {
       });
 
       this.logger.log(
-        `Converted draft → TravelRequest ${result.travelRequestId} ` +
+        `[draft-convert] Created TravelRequest ${result.travelRequestId} ` +
+          `destination="${draft.destination.value}" ` +
           `(conversation: ${conversationId}, user: ${userId})`,
       );
 
