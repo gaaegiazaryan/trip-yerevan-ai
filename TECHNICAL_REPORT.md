@@ -3,8 +3,8 @@
 **Date:** 2026-02-08
 **Repository:** `trip-yerevan-ai`
 **Branch:** `main`
-**Commit:** `628cb2b`
-**Previous Report Commit:** `fd10285` (2026-02-07)
+**Commit:** `0e37bb3`
+**Previous Report Commit:** `628cb2b` (2026-02-08)
 
 ---
 
@@ -144,7 +144,7 @@ Trip Yerevan AI is a Telegram-based travel RFQ (Request for Quote) platform that
 
 | Technology | Version | Purpose |
 |-----------|---------|---------|
-| **Jest** | 30.2.0 | Testing framework (152 tests across 13 spec files) |
+| **Jest** | 30.2.0 | Testing framework (161 tests across 14 spec files) |
 | **ts-jest** | 29.4.6 | TypeScript transformer for Jest |
 | **ts-node** | 10.9.2 | TypeScript runtime execution |
 | **NestJS CLI** | 11.x | Code generation and build tooling |
@@ -223,7 +223,7 @@ apps/backend/src/
 - **Responsibility:** Agency profiles, application workflow, approval/rejection, agent management
 - **Public API:** `AgenciesService`, `AgencyApplicationService` (both exported)
 - **Internal Services:**
-  - `AgenciesService` — CRUD operations, `findApproved()`, `findMatchingAgencies()`
+  - `AgenciesService` — CRUD operations, `findApproved()`, `findMatchingAgencies()`, `isActiveAgent(telegramId)` (checks if user is an active agency agent)
   - `AgencyApplicationService` — In-memory wizard for agency registration (5 steps: NAME → PHONE → SPECIALIZATIONS → COUNTRIES → CONFIRM), application review flow (approve/reject with reason)
 - **Controller:** `GET /api/agencies` (list approved), `GET /api/agencies/:id`
 - **Inter-module Dependencies:** None (uses PrismaService directly)
@@ -273,7 +273,7 @@ apps/backend/src/
 - **Public API:** `RfqDistributionService` (exported)
 - **Internal Services:**
   - `RfqDistributionService` — Orchestrates matching + record creation + job enqueueing + status updates
-  - `AgencyMatchingService` — Multi-factor scoring (region +3, specialization +2, rating +0-1), filters by `AgencyStatus.APPROVED`
+  - `AgencyMatchingService` — Multi-factor scoring (region +3, specialization +2, rating +0-1), filters by `AgencyStatus.APPROVED`, requires `telegramChatId` + active `AgencyAgent`, excludes traveler's own chatId (self-delivery prevention)
   - `RfqNotificationBuilder` — Builds structured notification payload + Telegram Markdown message
   - `RfqDistributionProcessor` — BullMQ job handler: sends RFQ message to agency Telegram chat with "Submit Offer" / "Reject" buttons
 - **Queue:** `rfq-distribution` with `deliver-rfq` jobs (3 retries, exponential backoff)
@@ -795,7 +795,8 @@ When a text message arrives, it is routed in this priority order:
 1. **Agency wizard active** (`agencyApp.hasActiveWizard(chatId)` or `hasPendingRejectReason(chatId)`) → `handleAgencyWizardText()`
 2. **Offer wizard active** (`offerWizard.hasActiveWizard(chatId)`) → `handleOfferWizardText()`
 3. **Rate limit check** → send "slow down" message if exceeded
-4. **Default** → `aiEngine.processMessage()` for AI conversation
+4. **Agency agent guard** (`agenciesService.isActiveAgent(telegramId)`) → block with "Agency accounts cannot create travel requests"
+5. **Default** → `aiEngine.processMessage()` for AI conversation
 
 ### UX Flows
 
@@ -902,9 +903,10 @@ Agency receives RFQ notification → [Submit Offer] [Reject]
    │
    ▼
 4. DISTRIBUTION ENGINE triggers automatically:
-   a. AgencyMatchingService scores agencies (region +3, spec +2, rating +0-1)
-   b. Filters APPROVED agencies only
-   c. Creates RfqDistribution records per agency
+   a. Loads traveler's telegramId for self-delivery prevention
+   b. AgencyMatchingService scores agencies (region +3, spec +2, rating +0-1)
+   c. Filters: APPROVED only, must have telegramChatId, must have active agents, excludes traveler's own chatId
+   d. Creates RfqDistribution records per eligible agency
    d. Updates TravelRequest → DISTRIBUTED
    e. Enqueues BullMQ delivery jobs
    │
@@ -973,6 +975,9 @@ All domain operations use the internal UUID. Telegram IDs are only used at the a
 ### Agency Isolation
 
 - Each agency has its own `telegramChatId` — RFQ notifications sent only to matched, APPROVED agencies
+- **Self-delivery prevention:** `AgencyMatchingService` excludes agencies whose `telegramChatId` matches the traveler's `telegramId` — a user cannot receive their own RFQ
+- **Agency agent guard:** Active agency agents are blocked from creating travel requests via the AI conversation flow (returns "Agency accounts cannot create travel requests")
+- **Agent requirement:** Agencies must have at least one active `AgencyAgent` to receive RFQ distributions
 - `Offer` has unique constraint `(travelRequestId, agencyId)` — one offer per agency per request
 - Agent resolution in offer wizard verifies `telegramId → User → AgencyAgent` chain before allowing offer submission
 - Auto-bootstrap creates `AgencyAgent` only if `chatId` matches an agency's `telegramChatId`
@@ -1030,7 +1035,7 @@ All domain operations use the internal UUID. Telegram IDs are only used at the a
 
 - **Build:** `nest build` → compiles TypeScript to `dist/`
 - **TypeScript:** Strict mode with incremental builds (`tsBuildInfoFile: "./dist/.tsbuildinfo"`)
-- **Tests:** Jest 30 with ts-jest, 152 tests across 13 spec files
+- **Tests:** Jest 30 with ts-jest, 161 tests across 14 spec files
 - **Linting:** ESLint configured for TypeScript
 - **No CI/CD pipeline configured** — no GitHub Actions, Docker, or deployment automation
 
@@ -1149,7 +1154,39 @@ All domain operations use the internal UUID. Telegram IDs are only used at the a
 
 ## 13. Change Log
 
-### Changes Since Last Report (fd10285 → 628cb2b)
+### Changes (628cb2b → 0e37bb3) — RFQ self-delivery fix & agency validation
+
+#### Changed Flows
+
+| Change | Details |
+|--------|---------|
+| **Self-delivery prevention** | `AgencyMatchingService.match()` now accepts `excludeChatId` parameter. `RfqDistributionService.distribute()` loads the traveler's `telegramId` and passes it to matching. Agencies whose `telegramChatId` matches the traveler are excluded from distribution. |
+| **Agency agent requirement** | `AgencyMatchingService` now includes `agents` (active only) in the agency query. Agencies with zero active `AgencyAgent` records are filtered out before scoring. |
+| **Missing chatId filter** | Agencies without a `telegramChatId` are now filtered out during matching (previously would fail later in the processor). |
+| **Agency agent role isolation** | `TelegramUpdate.handleTextMessage()` now checks `AgenciesService.isActiveAgent(telegramId)` before routing to AI conversation. Active agency agents receive "Agency accounts cannot create travel requests" and are blocked from the AI flow. |
+| **Structured skip logging** | `AgencyMatchingService` now logs `[agency-skip]` warnings with specific reasons: missing chatId, same chatId as traveler, no active agents. |
+
+#### New / Modified Files
+
+| File | Change |
+|------|--------|
+| `agencies.service.ts` | Added `isActiveAgent(telegramId): Promise<boolean>` — queries `agencyAgent` with active status via user relation |
+| `agency-matching.service.ts` | Added `excludeChatId` to `MatchCriteria`, added `include: { agents }` to query, added 3-filter eligibility check before scoring loop |
+| `rfq-distribution.service.ts` | Added `user.findUniqueOrThrow()` to load traveler's `telegramId`, passes `excludeChatId` to matching |
+| `telegram.update.ts` | Injected `AgenciesService`, added agency-agent guard in `handleTextMessage()` after user lookup |
+
+#### Test Coverage
+
+| Metric | Previous | Current |
+|--------|----------|---------|
+| Test files | 13 | 14 |
+| Total tests | 152 | 161 |
+| New test suites | — | `agency-matching.service.spec.ts` (7 tests: self-delivery exclusion, missing chatId filter, no-agents filter, scoring, fallback) |
+| Updated suites | — | `rfq-distribution.service.spec.ts` (+2 tests: excludeChatId passthrough, self-delivery prevention) |
+
+---
+
+### Previous: Changes (fd10285 → 628cb2b) — agency onboarding
 
 #### New Modules / Services
 
@@ -1463,14 +1500,14 @@ Phase 3 (5,000 → 50,000 users):
 
 ## 18. Production Readiness Score
 
-**Overall Score: 34 / 100**
+**Overall Score: 37 / 100** _(was 34 at 628cb2b)_
 
 ### Category Breakdown
 
 | Category | Score | Max | Assessment |
 |----------|-------|-----|-----------|
-| **Security** | 5 | 20 | REST API completely unprotected. No authentication, no CORS restrictions, no rate limiting on HTTP endpoints. Telegram identity mapping works but is not cryptographically verified. Input sanitization relies entirely on Prisma parameterization. Role checks exist only for `/review_agencies`. OWASP top-10 risks present (unrestricted CORS, no auth, no rate limiting). |
-| **Reliability** | 8 | 20 | In-memory wizard state lost on restart with no user notification. No circuit breakers for external services. AI provider fallback chain works but degrades silently. No status transition validation (invalid state changes possible). Prisma connection retry exists (3×2s). BullMQ retry exists (3× exponential). No dead letter queue for failed jobs. No scheduled expiration of stale requests. |
+| **Security** | 7 | 20 | REST API still unprotected. No authentication, no CORS restrictions, no rate limiting on HTTP endpoints. **Improved:** Self-delivery prevention guards RFQ routing. Agency-agent role isolation blocks agents from traveler flows. Role checks exist for `/review_agencies`. OWASP top-10 risks still present (unrestricted CORS, no auth, no HTTP rate limiting). |
+| **Reliability** | 9 | 20 | In-memory wizard state lost on restart with no user notification. No circuit breakers for external services. AI provider fallback chain works but degrades silently. No status transition validation (invalid state changes possible). **Improved:** Agency matching validates telegramChatId + active agents before distribution, preventing silent delivery failures. Prisma connection retry exists (3×2s). BullMQ retry exists (3× exponential). No dead letter queue. |
 | **Scalability** | 4 | 20 | Cannot run multiple instances (in-memory state). Single-process architecture. No connection pool tuning. Agency matching does full table scan. Unbounded query results on most endpoints. No caching layer. AI conversation history grows unbounded. Estimated ceiling: ~100 concurrent users on single instance. |
 | **Observability** | 5 | 20 | Basic `ConsoleLogger` wrapping NestJS logger — no structured logging. No distributed tracing or correlation IDs. No metrics collection (Prometheus/StatsD). Health check covers database only (no Redis, no AI provider, no queue). Token usage logged but not aggregated. No alerting. No dashboard. |
 | **Cost Efficiency** | 12 | 20 | AI provider fallback chain prevents total cost failure (Mock fallback = $0). Temperature 0.2 is cost-efficient for extraction tasks. max_tokens=2048 caps output cost. However: no per-user token budget, no conversation length limits, no prompt caching, full history on every call. Estimated cost at scale: $0.03-0.10 per conversation × 1000 daily = $30-100/day in AI API costs alone. |
@@ -1487,6 +1524,8 @@ Phase 3 (5,000 → 50,000 users):
 - Booking status audit trail
 - Telegram rate limiting (basic but functional)
 - Global ValidationPipe with whitelist mode
+- **Self-delivery prevention** — traveler's telegramId excluded from agency matching (+2 Security)
+- **Agency-agent role isolation** — active agents blocked from AI conversation flow (+1 Reliability)
 
 **What prevents a higher score (lost points):**
 - No authentication on REST API (−10)
@@ -1505,7 +1544,7 @@ Phase 3 (5,000 → 50,000 users):
 
 ### Minimum Viable Production Threshold: 60/100
 
-**Gap to close: 26 points.** Required actions:
+**Gap to close: 23 points** _(was 26)._ Required actions:
 1. REST API authentication (+8)
 2. Externalize wizard state to Redis (+6)
 3. Structured logging + basic metrics (+5)
