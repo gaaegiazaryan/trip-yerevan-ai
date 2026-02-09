@@ -9,6 +9,9 @@ import {
   MessageSenderType,
   ProxyChatStatus,
 } from '@prisma/client';
+import { formatForwardedMessage } from './proxy-chat-message-formatter';
+
+type SupportedLanguage = 'RU' | 'AM' | 'EN';
 
 export interface ProxyChatSession {
   proxyChatId: string;
@@ -30,6 +33,10 @@ export interface ProxyChatSession {
   pinnedMessageId?: number;
   /** Timestamp (Date.now()) of last activity — for session timeout */
   lastActivityAt: number;
+  /** User language for localized messages */
+  language: SupportedLanguage;
+  /** Telegram message_id of last forwarded message received (for reply-only mode) */
+  lastReceivedForwardedMsgId?: number;
 }
 
 export interface ForwardTarget {
@@ -81,6 +88,14 @@ export class ProxyChatSessionService {
     const session = this.sessions.get(chatId);
     if (session) {
       session.pinnedMessageId = messageId;
+    }
+  }
+
+  /** Set the last forwarded message ID for reply-only validation. */
+  setLastForwardedMsgId(chatId: number, msgId: number): void {
+    const session = this.sessions.get(chatId);
+    if (session) {
+      session.lastReceivedForwardedMsgId = msgId;
     }
   }
 
@@ -186,6 +201,7 @@ export class ProxyChatSessionService {
       isManager: false,
       agencyName: offer.agency.name,
       lastActivityAt: Date.now(),
+      language: 'EN',
     });
 
     this.logger.log(
@@ -264,6 +280,7 @@ export class ProxyChatSessionService {
       isManager: false,
       agencyName: proxyChat.agency.name,
       lastActivityAt: Date.now(),
+      language: 'EN',
     });
 
     this.logger.log(
@@ -323,6 +340,7 @@ export class ProxyChatSessionService {
       isManager: true,
       agencyName: 'N/A',
       lastActivityAt: Date.now(),
+      language: 'EN',
     });
 
     this.logger.log(
@@ -379,6 +397,7 @@ export class ProxyChatSessionService {
       isManager: false,
       agencyName: 'Manager Chat',
       lastActivityAt: Date.now(),
+      language: 'EN',
     });
 
     this.logger.log(
@@ -450,17 +469,16 @@ export class ProxyChatSessionService {
       telegramFileId,
     );
 
-    const prefix =
-      session.senderType === MessageSenderType.USER
-        ? '\ud83d\udcac *Traveler:*'
-        : session.isManager
-          ? '\ud83d\udc64 *Manager:*'
-          : `\ud83c\udfe2 *${session.senderLabel}:*`;
-
-    const forwardText =
-      contentType === MessageContentType.TEXT
-        ? `${prefix}\n${content}`
-        : `${prefix}\n[${contentType === MessageContentType.PHOTO ? 'Photo' : 'Document'}]`;
+    const forwardText = formatForwardedMessage({
+      senderType: session.senderType,
+      senderLabel: session.senderLabel,
+      isManager: session.isManager,
+      content,
+      contentType,
+      chatStatus: session.chatStatus,
+      agencyName: session.agencyName,
+      language: session.language,
+    });
 
     // Build forward targets (deduplicated)
     const seen = new Set<number>();

@@ -12,7 +12,10 @@ type MessageKey =
   | 'chat_header_manager'
   | 'chat_exit'
   | 'chat_timeout'
-  | 'chat_manager_requested';
+  | 'chat_manager_requested'
+  | 'chat_reply_only_warning'
+  | 'chat_auto_closed'
+  | 'chat_reopened';
 
 // NOTE: AM translations use English as interim placeholders.
 // Replace with native Armenian text provided by a human translator.
@@ -64,19 +67,19 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
       '\ud83d\udcac *\u0420\u0435\u0436\u0438\u043c \u0447\u0430\u0442\u0430*\n\n' +
       '\u0410\u0433\u0435\u043d\u0442\u0441\u0442\u0432\u043e: {agencyName}\n' +
       '\u0421\u0442\u0430\u0442\u0443\u0441: \u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0439\n\n' +
-      '\u041f\u0438\u0448\u0438\u0442\u0435 \u0432\u0430\u0448\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043d\u0438\u0436\u0435.\n' +
+      '\u041e\u0442\u0432\u0435\u0447\u0430\u0439\u0442\u0435 \u043d\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0434\u043b\u044f \u043e\u0431\u0449\u0435\u043d\u0438\u044f. \u0421\u0432\u0430\u0439\u043f \u0432\u043b\u0435\u0432\u043e \u0434\u043b\u044f \u043e\u0442\u0432\u0435\u0442\u0430.\n' +
       '\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u274c Exit chat \u0434\u043b\u044f \u0432\u044b\u0445\u043e\u0434\u0430.',
     AM:
       '\ud83d\udcac *Chat Mode*\n\n' +
       'Agency: {agencyName}\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
     EN:
       '\ud83d\udcac *Chat Mode*\n\n' +
       'Agency: {agencyName}\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
   },
   chat_header_agency: {
@@ -84,19 +87,19 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
       '\ud83d\udcac *\u0420\u0435\u0436\u0438\u043c \u0447\u0430\u0442\u0430*\n\n' +
       '\u041e\u0442\u0432\u0435\u0442 \u043f\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u0438\u043a\u0443\n' +
       '\u0421\u0442\u0430\u0442\u0443\u0441: \u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0439\n\n' +
-      '\u041f\u0438\u0448\u0438\u0442\u0435 \u0432\u0430\u0448\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043d\u0438\u0436\u0435.\n' +
+      '\u041e\u0442\u0432\u0435\u0447\u0430\u0439\u0442\u0435 \u043d\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0434\u043b\u044f \u043e\u0431\u0449\u0435\u043d\u0438\u044f. \u0421\u0432\u0430\u0439\u043f \u0432\u043b\u0435\u0432\u043e \u0434\u043b\u044f \u043e\u0442\u0432\u0435\u0442\u0430.\n' +
       '\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u274c Exit chat \u0434\u043b\u044f \u0432\u044b\u0445\u043e\u0434\u0430.',
     AM:
       '\ud83d\udcac *Chat Mode*\n\n' +
       'Replying to traveler\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
     EN:
       '\ud83d\udcac *Chat Mode*\n\n' +
       'Replying to traveler\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
   },
   chat_header_manager: {
@@ -104,19 +107,19 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
       '\ud83d\udcac *\u0420\u0435\u0436\u0438\u043c \u0447\u0430\u0442\u0430 (\u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440)*\n\n' +
       '\u041e\u0431\u0449\u0435\u043d\u0438\u0435 \u0441 \u043f\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0435\u043d\u043d\u0438\u043a\u043e\u043c\n' +
       '\u0421\u0442\u0430\u0442\u0443\u0441: \u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0439\n\n' +
-      '\u041f\u0438\u0448\u0438\u0442\u0435 \u0432\u0430\u0448\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043d\u0438\u0436\u0435.\n' +
+      '\u041e\u0442\u0432\u0435\u0447\u0430\u0439\u0442\u0435 \u043d\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0434\u043b\u044f \u043e\u0431\u0449\u0435\u043d\u0438\u044f. \u0421\u0432\u0430\u0439\u043f \u0432\u043b\u0435\u0432\u043e \u0434\u043b\u044f \u043e\u0442\u0432\u0435\u0442\u0430.\n' +
       '\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u274c Exit chat \u0434\u043b\u044f \u0432\u044b\u0445\u043e\u0434\u0430.',
     AM:
       '\ud83d\udcac *Chat Mode (Manager)*\n\n' +
       'Chatting with traveler\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
     EN:
       '\ud83d\udcac *Chat Mode (Manager)*\n\n' +
       'Chatting with traveler\n' +
       'Status: Active\n\n' +
-      'Type your message below.\n' +
+      'Reply to messages to chat. Swipe left on a message to reply.\n' +
       'Press \u274c Exit chat to leave.',
   },
   chat_exit: {
@@ -137,6 +140,21 @@ const MESSAGES: Record<MessageKey, Record<SupportedLanguage, string>> = {
       '\u041c\u0435\u043d\u0435\u0434\u0436\u0435\u0440 \u0441\u0432\u044f\u0436\u0435\u0442\u0441\u044f \u0441 \u0432\u0430\u043c\u0438 \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f.',
     AM: '\ud83c\udd98 Manager assistance request sent. A manager will contact you shortly.',
     EN: '\ud83c\udd98 Manager assistance request sent. A manager will contact you shortly.',
+  },
+  chat_reply_only_warning: {
+    RU: '\u26a0\ufe0f \u041f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, \u043e\u0442\u0432\u0435\u0442\u044c\u0442\u0435 \u043d\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 (\u0441\u0432\u0430\u0439\u043f \u0432\u043b\u0435\u0432\u043e), \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0447\u0430\u0442.',
+    AM: '\u26a0\ufe0f Please reply to a message (swipe left) to continue the chat.',
+    EN: '\u26a0\ufe0f Please reply to a message (swipe left) to continue the chat.',
+  },
+  chat_auto_closed: {
+    RU: '\ud83d\udd34 \u0427\u0430\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u0437\u0430\u043a\u0440\u044b\u0442 \u0438\u0437-\u0437\u0430 7 \u0434\u043d\u0435\u0439 \u043d\u0435\u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u0438.',
+    AM: '\ud83d\udd34 Chat auto-closed due to 7 days of inactivity.',
+    EN: '\ud83d\udd34 Chat auto-closed due to 7 days of inactivity.',
+  },
+  chat_reopened: {
+    RU: '\ud83d\udfe2 \u0427\u0430\u0442 \u0431\u044b\u043b \u0432\u043e\u0437\u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d. \u041d\u0430\u0436\u043c\u0438\u0442\u0435 "\u21a9 Reply" \u043d\u0430 \u043b\u044e\u0431\u043e\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435, \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c.',
+    AM: '\ud83d\udfe2 Chat has been reopened. Click "\u21a9 Reply" on any message to resume.',
+    EN: '\ud83d\udfe2 Chat has been reopened. Click "\u21a9 Reply" on any message to resume.',
   },
 };
 

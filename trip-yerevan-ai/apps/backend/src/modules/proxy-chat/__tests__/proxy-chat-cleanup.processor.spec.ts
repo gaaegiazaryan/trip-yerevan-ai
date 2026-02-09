@@ -5,6 +5,7 @@ function createMockProxyChatService() {
   return {
     findInactiveChats: jest.fn().mockResolvedValue([]),
     close: jest.fn(),
+    getParticipantTelegramIds: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -12,17 +13,27 @@ function createMockAuditLog() {
   return { log: jest.fn() };
 }
 
+function createMockTelegramService() {
+  return {
+    sendRfqToAgency: jest.fn().mockResolvedValue(101),
+    sendMessage: jest.fn().mockResolvedValue(100),
+  };
+}
+
 describe('ProxyChatCleanupProcessor', () => {
   let processor: ProxyChatCleanupProcessor;
   let proxyChatService: ReturnType<typeof createMockProxyChatService>;
   let auditLog: ReturnType<typeof createMockAuditLog>;
+  let telegramService: ReturnType<typeof createMockTelegramService>;
 
   beforeEach(() => {
     proxyChatService = createMockProxyChatService();
     auditLog = createMockAuditLog();
+    telegramService = createMockTelegramService();
     processor = new ProxyChatCleanupProcessor(
       proxyChatService as any,
       auditLog as any,
+      telegramService as any,
     );
   });
 
@@ -84,5 +95,77 @@ describe('ProxyChatCleanupProcessor', () => {
     expect(callArg.getTime()).toBe(expectedCutoff.getTime());
 
     jest.useRealTimers();
+  });
+
+  it('should notify traveler and agents on auto-close', async () => {
+    proxyChatService.findInactiveChats.mockResolvedValue([
+      { id: 'pc-1', status: ProxyChatStatus.OPEN },
+    ]);
+    proxyChatService.getParticipantTelegramIds.mockResolvedValue({
+      travelerTelegramId: BigInt(12345),
+      agentTelegramIds: [BigInt(99999), BigInt(88888)],
+      agencyGroupChatId: null,
+    });
+
+    await processor.process({} as any);
+
+    // Traveler notification
+    expect(telegramService.sendRfqToAgency).toHaveBeenCalledWith(
+      12345,
+      expect.stringContaining('automatically closed'),
+      expect.arrayContaining([
+        expect.objectContaining({ callbackData: 'chat:reopen:pc-1' }),
+      ]),
+    );
+
+    // Agent notifications (2 agents)
+    expect(telegramService.sendRfqToAgency).toHaveBeenCalledWith(
+      99999,
+      expect.stringContaining('automatically closed'),
+      expect.any(Array),
+    );
+    expect(telegramService.sendRfqToAgency).toHaveBeenCalledWith(
+      88888,
+      expect.stringContaining('automatically closed'),
+      expect.any(Array),
+    );
+
+    // 3 total: 1 traveler + 2 agents
+    expect(telegramService.sendRfqToAgency).toHaveBeenCalledTimes(3);
+  });
+
+  it('should include reopen button in notifications', async () => {
+    proxyChatService.findInactiveChats.mockResolvedValue([
+      { id: 'pc-42', status: ProxyChatStatus.OPEN },
+    ]);
+    proxyChatService.getParticipantTelegramIds.mockResolvedValue({
+      travelerTelegramId: BigInt(12345),
+      agentTelegramIds: [],
+      agencyGroupChatId: null,
+    });
+
+    await processor.process({} as any);
+
+    const buttons = telegramService.sendRfqToAgency.mock.calls[0][2];
+    expect(buttons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: expect.stringContaining('Reopen'),
+          callbackData: 'chat:reopen:pc-42',
+        }),
+      ]),
+    );
+  });
+
+  it('should skip notification when no participants found', async () => {
+    proxyChatService.findInactiveChats.mockResolvedValue([
+      { id: 'pc-1', status: ProxyChatStatus.OPEN },
+    ]);
+    proxyChatService.getParticipantTelegramIds.mockResolvedValue(null);
+
+    await processor.process({} as any);
+
+    expect(proxyChatService.close).toHaveBeenCalledTimes(1);
+    expect(telegramService.sendRfqToAgency).not.toHaveBeenCalled();
   });
 });

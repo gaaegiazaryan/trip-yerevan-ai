@@ -25,3 +25,11 @@ export const CHAT_KEYBOARD_LABELS = new Set([
   KB_CHAT_DETAILS,
   KB_CONTACT_MANAGER,
 ]);
+
+// ---------------------------------------------------------------------------
+// Closed-reason constants (type-safe strings for ProxyChat.closedReason)
+// ---------------------------------------------------------------------------
+
+export const CLOSED_REASON_MANUAL = 'manual';
+export const CLOSED_REASON_AUTO_INACTIVITY = 'auto_closed_inactivity';
+export const CLOSED_REASON_MANAGER = 'manager_closed';

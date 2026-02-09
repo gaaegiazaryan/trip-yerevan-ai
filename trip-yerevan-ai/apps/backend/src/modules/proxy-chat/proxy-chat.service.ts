@@ -54,9 +54,16 @@ export class ProxyChatService {
     contentType: MessageContentType = MessageContentType.TEXT,
     telegramFileId?: string,
   ): Promise<ProxyChatMessage> {
-    return this.prisma.proxyChatMessage.create({
-      data: { proxyChatId, senderType, senderId, content, contentType, telegramFileId },
-    });
+    const [msg] = await this.prisma.$transaction([
+      this.prisma.proxyChatMessage.create({
+        data: { proxyChatId, senderType, senderId, content, contentType, telegramFileId },
+      }),
+      this.prisma.proxyChat.update({
+        where: { id: proxyChatId },
+        data: { lastActivityAt: new Date() },
+      }),
+    ]);
+    return msg;
   }
 
   async close(id: string, closedReason?: string): Promise<ProxyChat> {
@@ -105,5 +112,46 @@ export class ProxyChatService {
         },
       },
     });
+  }
+
+  async reopen(id: string): Promise<ProxyChat> {
+    return this.prisma.proxyChat.update({
+      where: { id },
+      data: {
+        status: ProxyChatStatus.OPEN,
+        closedAt: null,
+        closedReason: null,
+        reopenedAt: new Date(),
+        lastActivityAt: new Date(),
+      },
+    });
+  }
+
+  async getParticipantTelegramIds(proxyChatId: string): Promise<{
+    travelerTelegramId: bigint;
+    agentTelegramIds: bigint[];
+    agencyGroupChatId: bigint | null;
+  } | null> {
+    const chat = await this.prisma.proxyChat.findUnique({
+      where: { id: proxyChatId },
+      include: {
+        user: { select: { telegramId: true } },
+        agency: {
+          select: {
+            agencyTelegramChatId: true,
+            memberships: {
+              where: { status: 'ACTIVE' },
+              select: { user: { select: { telegramId: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (!chat) return null;
+    return {
+      travelerTelegramId: chat.user.telegramId,
+      agentTelegramIds: chat.agency.memberships.map((m) => m.user.telegramId),
+      agencyGroupChatId: chat.agency.agencyTelegramChatId,
+    };
   }
 }

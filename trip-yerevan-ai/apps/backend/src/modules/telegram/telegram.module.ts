@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Bot } from 'grammy';
 import { BotContext } from './telegram-context';
@@ -15,7 +15,7 @@ import { ProxyChatModule } from '../proxy-chat/proxy-chat.module';
 import { BookingsModule } from '../bookings/bookings.module';
 
 @Module({
-  imports: [UsersModule, AiModule, OffersModule, AgenciesModule, ProxyChatModule, BookingsModule],
+  imports: [UsersModule, AiModule, OffersModule, AgenciesModule, forwardRef(() => ProxyChatModule), BookingsModule],
   providers: [
     {
       provide: TELEGRAM_BOT,

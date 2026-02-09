@@ -100,6 +100,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -125,6 +127,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -154,6 +158,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -175,6 +181,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: new Date(),
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
       prisma.proxyChat.update.mockResolvedValue({
         id: 'pc-closed',
@@ -185,6 +193,8 @@ describe('ProxyChatSessionService', () => {
         offerId: OFFER_ID,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -237,6 +247,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -262,6 +274,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
     });
@@ -317,6 +331,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -427,6 +443,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -460,6 +478,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -487,6 +507,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -511,6 +533,8 @@ describe('ProxyChatSessionService', () => {
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -522,6 +546,62 @@ describe('ProxyChatSessionService', () => {
 
     it('should be a no-op for unknown chat', () => {
       expect(() => service.setPinnedMessageId(99999, 100)).not.toThrow();
+    });
+  });
+
+  describe('setLastForwardedMsgId', () => {
+    it('should store last forwarded message ID on session', async () => {
+      prisma.offer.findUnique.mockResolvedValue(makeOffer());
+      proxyChatService.findByParticipants.mockResolvedValue(null);
+      proxyChatService.create.mockResolvedValue({
+        id: 'pc-1',
+        travelRequestId: TR_ID,
+        userId: OWNER_USER_ID,
+        agencyId: AGENCY_ID,
+        offerId: OFFER_ID,
+        status: ProxyChatStatus.OPEN,
+        closedReason: null,
+        managerId: null,
+        createdAt: new Date(),
+        closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
+      });
+
+      await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
+      expect(service.getSession(12345)?.lastReceivedForwardedMsgId).toBeUndefined();
+
+      service.setLastForwardedMsgId(12345, 999);
+      expect(service.getSession(12345)?.lastReceivedForwardedMsgId).toBe(999);
+    });
+
+    it('should be a no-op for unknown chat', () => {
+      expect(() => service.setLastForwardedMsgId(99999, 100)).not.toThrow();
+    });
+  });
+
+  describe('session language field', () => {
+    it('should default language to EN for traveler sessions', async () => {
+      prisma.offer.findUnique.mockResolvedValue(makeOffer());
+      proxyChatService.findByParticipants.mockResolvedValue(null);
+      proxyChatService.create.mockResolvedValue({
+        id: 'pc-1',
+        travelRequestId: TR_ID,
+        userId: OWNER_USER_ID,
+        agencyId: AGENCY_ID,
+        offerId: OFFER_ID,
+        status: ProxyChatStatus.OPEN,
+        closedReason: null,
+        managerId: null,
+        createdAt: new Date(),
+        closedAt: null,
+        lastActivityAt: new Date(),
+        reopenedAt: null,
+      });
+
+      await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
+      const session = service.getSession(12345);
+      expect(session?.language).toBe('EN');
     });
   });
 });

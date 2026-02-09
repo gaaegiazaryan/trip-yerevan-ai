@@ -1,4 +1,4 @@
-import { Module, OnModuleInit, Logger } from '@nestjs/common';
+import { Module, OnModuleInit, Logger, forwardRef } from '@nestjs/common';
 import { BullModule, InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { ProxyChatService } from './proxy-chat.service';
@@ -9,13 +9,17 @@ import { ChatAuditLogService } from './chat-audit-log.service';
 import { ManagerTakeoverService } from './manager-takeover.service';
 import { ProxyChatCleanupProcessor } from './proxy-chat-cleanup.processor';
 import { ProxyChatController } from './proxy-chat.controller';
+import { TelegramModule } from '../telegram/telegram.module';
 import {
   PROXY_CHAT_QUEUE,
   PROXY_CHAT_CLEANUP_JOB,
 } from './proxy-chat.constants';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: PROXY_CHAT_QUEUE })],
+  imports: [
+    BullModule.registerQueue({ name: PROXY_CHAT_QUEUE }),
+    forwardRef(() => TelegramModule),
+  ],
   controllers: [ProxyChatController],
   providers: [
     ProxyChatService,

@@ -20,6 +20,8 @@ import {
   ProxyChatSessionService,
   ProxyChatSession,
 } from '../proxy-chat/proxy-chat-session.service';
+import { ProxyChatService } from '../proxy-chat/proxy-chat.service';
+import { ChatAuditLogService, ChatAuditEvent } from '../proxy-chat/chat-audit-log.service';
 import { BookingAcceptanceService } from '../bookings/booking-acceptance.service';
 import { ManagerTakeoverService } from '../proxy-chat/manager-takeover.service';
 import {
@@ -70,6 +72,8 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly agenciesService: AgenciesService,
     private readonly agencyMgmt: AgencyManagementService,
     private readonly proxyChatSession: ProxyChatSessionService,
+    private readonly proxyChatService: ProxyChatService,
+    private readonly chatAuditLog: ChatAuditLogService,
     private readonly bookingAcceptance: BookingAcceptanceService,
     private readonly managerTakeover: ManagerTakeoverService,
   ) {}
@@ -228,11 +232,21 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     // Route to proxy chat if session is active
     if (this.proxyChatSession.hasActiveSession(chatId)) {
-      // Intercept reply-keyboard button presses
+      // Intercept reply-keyboard button presses (exempt from reply-only check)
       if (CHAT_KEYBOARD_LABELS.has(text)) {
         await this.handleChatKeyboardPress(chatId, text);
         return;
       }
+
+      // Reply-only enforcement: require reply-to-message
+      const session = this.proxyChatSession.getSession(chatId)!;
+      if (session.lastReceivedForwardedMsgId && !ctx.message?.reply_to_message) {
+        await this.telegramService
+          .sendMessage(chatId, getTelegramMessage('chat_reply_only_warning', 'EN'))
+          .catch(() => {});
+        return;
+      }
+
       this.proxyChatSession.touchSession(chatId);
       await this.handleProxyChatMessage(chatId, text, MessageContentType.TEXT);
       return;
@@ -475,6 +489,15 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     // Route to proxy chat if session is active
     if (this.proxyChatSession.hasActiveSession(chatId)) {
+      // Reply-only enforcement for photos
+      const session = this.proxyChatSession.getSession(chatId)!;
+      if (session.lastReceivedForwardedMsgId && !ctx.message?.reply_to_message) {
+        await this.telegramService
+          .sendMessage(chatId, getTelegramMessage('chat_reply_only_warning', 'EN'))
+          .catch(() => {});
+        return;
+      }
+
       await this.handleProxyChatMessage(
         chatId,
         ctx.message?.caption ?? 'Photo',
@@ -503,6 +526,15 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     // Route to proxy chat if session is active
     if (this.proxyChatSession.hasActiveSession(chatId)) {
+      // Reply-only enforcement for documents
+      const session = this.proxyChatSession.getSession(chatId)!;
+      if (session.lastReceivedForwardedMsgId && !ctx.message?.reply_to_message) {
+        await this.telegramService
+          .sendMessage(chatId, getTelegramMessage('chat_reply_only_warning', 'EN'))
+          .catch(() => {});
+        return;
+      }
+
       await this.handleProxyChatMessage(
         chatId,
         ctx.message?.caption ?? doc.file_name ?? 'Document',
@@ -826,6 +858,41 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[chat-callback] chatId=${chatId}, data=${data}`);
 
     try {
+      // chat:reopen:{proxyChatId} → reopen a closed chat
+      if (data.startsWith('chat:reopen:')) {
+        const proxyChatId = data.replace('chat:reopen:', '');
+        if (!ctx.dbUser) return;
+
+        const participants =
+          await this.proxyChatService.getParticipantTelegramIds(proxyChatId);
+        if (!participants) {
+          await this.telegramService.sendMessage(chatId, 'Chat not found.');
+          return;
+        }
+
+        const userTelegramId = ctx.dbUser.telegramId;
+        const isParticipant =
+          userTelegramId === participants.travelerTelegramId ||
+          participants.agentTelegramIds.includes(userTelegramId);
+        if (!isParticipant) {
+          await this.telegramService.sendMessage(chatId, 'Not authorized.');
+          return;
+        }
+
+        await this.proxyChatService.reopen(proxyChatId);
+        await this.chatAuditLog.log(
+          proxyChatId,
+          ChatAuditEvent.CHAT_REOPENED,
+          ctx.dbUser.id,
+        );
+
+        await this.telegramService.sendMessage(
+          chatId,
+          getTelegramMessage('chat_reopened', 'EN'),
+        );
+        return;
+      }
+
       // chat:reply:{proxyChatId} → agent enters reply mode with sticky session
       if (data.startsWith('chat:reply:')) {
         const proxyChatId = data.replace('chat:reply:', '');
@@ -1014,6 +1081,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       const session = this.proxyChatSession.getSession(chatId);
 
       for (const target of result.targets) {
+        const replyButton = session
+          ? [{ label: '\u21a9 Reply', callbackData: `chat:reply:${session.proxyChatId}` }]
+          : [];
+
+        let sentMsgId: number | undefined;
+
         if (target.contentType === MessageContentType.PHOTO && target.telegramFileId) {
           await this.telegramService.sendMediaGroup(
             target.chatId,
@@ -1023,15 +1096,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
               `[proxy-chat] Failed to forward photo to ${target.chatId}: ${err}`,
             );
           });
-          // Also send the text label
-          const replyButton = session
-            ? [{ label: '\u21a9 Reply', callbackData: `chat:reply:${session.proxyChatId}` }]
-            : [];
-          await this.telegramService.sendRfqToAgency(
+          sentMsgId = await this.telegramService.sendRfqToAgency(
             target.chatId,
             target.text,
             replyButton,
-          ).catch(() => {});
+          ).catch(() => undefined);
         } else if (target.contentType === MessageContentType.DOCUMENT && target.telegramFileId) {
           await this.telegramService.sendDocument(
             target.chatId,
@@ -1041,20 +1110,13 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
               `[proxy-chat] Failed to forward document to ${target.chatId}: ${err}`,
             );
           });
-          const replyButton = session
-            ? [{ label: '\u21a9 Reply', callbackData: `chat:reply:${session.proxyChatId}` }]
-            : [];
-          await this.telegramService.sendRfqToAgency(
+          sentMsgId = await this.telegramService.sendRfqToAgency(
             target.chatId,
             target.text,
             replyButton,
-          ).catch(() => {});
+          ).catch(() => undefined);
         } else {
-          // Text message — include Reply button for counterpart
-          const replyButton = session
-            ? [{ label: '\u21a9 Reply', callbackData: `chat:reply:${session.proxyChatId}` }]
-            : [];
-          await this.telegramService.sendRfqToAgency(
+          sentMsgId = await this.telegramService.sendRfqToAgency(
             target.chatId,
             target.text,
             replyButton,
@@ -1062,7 +1124,13 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
             this.logger.error(
               `[proxy-chat] Failed to forward text to ${target.chatId}: ${err}`,
             );
+            return undefined;
           });
+        }
+
+        // Update counterpart's reply-to tracking for reply-only mode
+        if (sentMsgId && this.proxyChatSession.hasActiveSession(target.chatId)) {
+          this.proxyChatSession.setLastForwardedMsgId(target.chatId, sentMsgId);
         }
       }
     } catch (error) {
@@ -1483,8 +1551,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       keyboard,
     );
 
-    // Pin the header (best-effort — may fail in private chats)
+    // Set reply-to target (header is the initial "last received" message)
     if (headerMsgId) {
+      this.proxyChatSession.setLastForwardedMsgId(chatId, headerMsgId);
+
+      // Pin the header (best-effort — may fail in private chats)
       const pinned = await this.telegramService.pinMessage(chatId, headerMsgId);
       if (pinned) {
         this.proxyChatSession.setPinnedMessageId(chatId, headerMsgId);
@@ -1666,6 +1737,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       ['proxyChatSession.getExpiredSessions', this.proxyChatSession?.getExpiredSessions],
       ['proxyChatSession.touchSession', this.proxyChatSession?.touchSession],
       ['proxyChatSession.setPinnedMessageId', this.proxyChatSession?.setPinnedMessageId],
+      ['proxyChatSession.setLastForwardedMsgId', this.proxyChatSession?.setLastForwardedMsgId],
+      ['proxyChatService.reopen', this.proxyChatService?.reopen],
+      ['proxyChatService.getParticipantTelegramIds', this.proxyChatService?.getParticipantTelegramIds],
+      ['chatAuditLog.log', this.chatAuditLog?.log],
       ['bookingAcceptance.showConfirmation', this.bookingAcceptance?.showConfirmation],
       ['managerTakeover.onBookingCreated', this.managerTakeover?.onBookingCreated],
     ];

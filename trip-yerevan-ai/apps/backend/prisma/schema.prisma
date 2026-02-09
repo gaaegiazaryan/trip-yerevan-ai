@@ -440,6 +440,8 @@ model ProxyChat {
   managerId       String?         @db.Uuid
   createdAt       DateTime        @default(now())
   closedAt        DateTime?
+  lastActivityAt  DateTime        @default(now())
+  reopenedAt      DateTime?
 
   // Relations
   travelRequest TravelRequest    @relation(fields: [travelRequestId], references: [id])
