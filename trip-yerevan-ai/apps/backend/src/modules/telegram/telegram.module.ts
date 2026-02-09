@@ -11,9 +11,11 @@ import { UsersModule } from '../users/users.module';
 import { AiModule } from '../ai/ai.module';
 import { OffersModule } from '../offers/offers.module';
 import { AgenciesModule } from '../agencies/agencies.module';
+import { ProxyChatModule } from '../proxy-chat/proxy-chat.module';
+import { BookingsModule } from '../bookings/bookings.module';
 
 @Module({
-  imports: [UsersModule, AiModule, OffersModule, AgenciesModule],
+  imports: [UsersModule, AiModule, OffersModule, AgenciesModule, ProxyChatModule, BookingsModule],
   providers: [
     {
       provide: TELEGRAM_BOT,

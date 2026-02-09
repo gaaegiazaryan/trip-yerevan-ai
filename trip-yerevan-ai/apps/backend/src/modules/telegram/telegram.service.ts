@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, Keyboard } from 'grammy';
 import { TELEGRAM_BOT, TelegramBot } from './telegram-bot.provider';
 import { SuggestedAction, SupportedLanguage } from '../ai/types';
 import { getTelegramMessage } from './telegram-messages';
@@ -12,23 +12,25 @@ export class TelegramService {
     @Inject(TELEGRAM_BOT) private readonly bot: TelegramBot,
   ) {}
 
-  async sendMessage(chatId: number, text: string): Promise<void> {
+  async sendMessage(chatId: number, text: string): Promise<number | undefined> {
     if (!this.bot) {
       this.logger.warn('Bot not initialized, cannot send message');
-      return;
+      return undefined;
     }
 
     try {
-      await this.bot.api.sendMessage(chatId, text, {
+      const msg = await this.bot.api.sendMessage(chatId, text, {
         parse_mode: 'Markdown',
       });
+      return msg.message_id;
     } catch (error) {
       // Markdown parse failure — retry without formatting
       this.logger.warn(
         `Markdown send failed for chat ${chatId}, retrying as plain text`,
       );
       try {
-        await this.bot.api.sendMessage(chatId, text);
+        const msg = await this.bot.api.sendMessage(chatId, text);
+        return msg.message_id;
       } catch (retryError) {
         this.logger.error(
           `Failed to send message to chat ${chatId}: ${retryError}`,
@@ -130,7 +132,7 @@ export class TelegramService {
     chatId: number,
     text: string,
     actions: { label: string; callbackData: string }[],
-  ): Promise<void> {
+  ): Promise<number | undefined> {
     if (!this.bot) {
       this.logger.warn('Bot not initialized, cannot send RFQ to agency');
       throw new Error('Telegram bot is not initialized');
@@ -142,19 +144,21 @@ export class TelegramService {
     }
 
     try {
-      await this.bot.api.sendMessage(chatId, text, {
+      const msg = await this.bot.api.sendMessage(chatId, text, {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
       });
+      return msg.message_id;
     } catch (error) {
       // Markdown parse failure — retry without formatting
       this.logger.warn(
         `Markdown RFQ send failed for chat ${chatId}, retrying as plain text`,
       );
       try {
-        await this.bot.api.sendMessage(chatId, text, {
+        const msg = await this.bot.api.sendMessage(chatId, text, {
           reply_markup: keyboard,
         });
+        return msg.message_id;
       } catch (retryError) {
         this.logger.error(
           `Failed to send RFQ to agency chat ${chatId}: ${retryError}`,
@@ -208,6 +212,19 @@ export class TelegramService {
     }
   }
 
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    if (!this.bot) return;
+
+    try {
+      await this.bot.api.deleteMessage(chatId, messageId);
+    } catch (error) {
+      // Message may already be deleted or too old — not critical
+      this.logger.debug(
+        `Failed to delete message ${messageId} in chat ${chatId}: ${error}`,
+      );
+    }
+  }
+
   async sendMediaGroup(
     chatId: number,
     fileIds: string[],
@@ -245,6 +262,116 @@ export class TelegramService {
       this.logger.error(
         `Failed to send document to chat ${chatId}: ${error}`,
       );
+    }
+  }
+
+  /**
+   * Sends a message with a ReplyKeyboardMarkup (persistent bottom buttons).
+   * Returns the message ID for potential pinning.
+   */
+  async sendReplyKeyboard(
+    chatId: number,
+    text: string,
+    keyboard: Keyboard,
+  ): Promise<number | undefined> {
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot send reply keyboard');
+      return undefined;
+    }
+
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+      return msg.message_id;
+    } catch (error) {
+      this.logger.warn(
+        `Markdown reply keyboard send failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        const msg = await this.bot.api.sendMessage(chatId, text, {
+          reply_markup: keyboard,
+        });
+        return msg.message_id;
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send reply keyboard to chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
+    }
+  }
+
+  /**
+   * Sends a message and removes the custom reply keyboard.
+   */
+  async removeReplyKeyboard(
+    chatId: number,
+    text: string,
+  ): Promise<number | undefined> {
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot remove reply keyboard');
+      return undefined;
+    }
+
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: { remove_keyboard: true },
+      });
+      return msg.message_id;
+    } catch (error) {
+      this.logger.warn(
+        `Markdown removeKeyboard send failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        const msg = await this.bot.api.sendMessage(chatId, text, {
+          reply_markup: { remove_keyboard: true },
+        });
+        return msg.message_id;
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to remove reply keyboard in chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
+    }
+  }
+
+  /**
+   * Pins a message in a chat. Returns false if pinning fails (non-critical).
+   */
+  async pinMessage(chatId: number, messageId: number): Promise<boolean> {
+    if (!this.bot) return false;
+
+    try {
+      await this.bot.api.pinChatMessage(chatId, messageId, {
+        disable_notification: true,
+      });
+      return true;
+    } catch (error) {
+      this.logger.debug(
+        `Failed to pin message ${messageId} in chat ${chatId}: ${error}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Unpins a specific message. Returns false if unpinning fails (non-critical).
+   */
+  async unpinMessage(chatId: number, messageId: number): Promise<boolean> {
+    if (!this.bot) return false;
+
+    try {
+      await this.bot.api.unpinChatMessage(chatId, messageId);
+      return true;
+    } catch (error) {
+      this.logger.debug(
+        `Failed to unpin message ${messageId} in chat ${chatId}: ${error}`,
+      );
+      return false;
     }
   }
 

@@ -13,6 +13,7 @@ export interface OfferListResult {
   totalOffers: number;
   page: number;
   totalPages: number;
+  travelRequestId: string;
 }
 
 export interface OfferDetailResult {
@@ -20,6 +21,7 @@ export interface OfferDetailResult {
   buttons: { label: string; callbackData: string }[];
   imageFileIds: string[];
   documentFileIds: { fileId: string; fileName?: string }[];
+  travelRequestId: string;
 }
 
 export interface OfferViewError {
@@ -40,16 +42,27 @@ export class OfferViewerService {
   ): Promise<OfferListResult | OfferViewError> {
     const travelRequest = await this.prisma.travelRequest.findUnique({
       where: { id: travelRequestId },
-      select: { id: true, userId: true, destination: true },
+      select: {
+        id: true,
+        userId: true,
+        destination: true,
+        departureDate: true,
+        returnDate: true,
+        adults: true,
+        children: true,
+      },
     });
 
     if (!travelRequest) {
+      this.logger.warn(
+        `[offer-list] action=not_found, requestId=${travelRequestId}, userId=${userId}`,
+      );
       return { text: 'Travel request not found.' };
     }
 
     if (travelRequest.userId !== userId) {
       this.logger.warn(
-        `[offer-viewer] Unauthorized: user=${userId} tried to view offers for request owned by ${travelRequest.userId}`,
+        `[offer-list] action=unauthorized, requestId=${travelRequestId}, userId=${userId}, ownerId=${travelRequest.userId}`,
       );
       return { text: 'You are not authorized to view these offers.' };
     }
@@ -62,10 +75,13 @@ export class OfferViewerService {
         },
       },
       include: { agency: { select: { name: true } } },
-      orderBy: { totalPrice: 'asc' },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (offers.length === 0) {
+      this.logger.log(
+        `[offer-list] action=empty, requestId=${travelRequestId}, userId=${userId}`,
+      );
       return {
         text: 'No offers yet for this travel request. We will notify you when agencies respond.',
       };
@@ -84,6 +100,12 @@ export class OfferViewerService {
       safePage,
       totalPages,
       offers.length,
+      {
+        departureDate: travelRequest.departureDate,
+        returnDate: travelRequest.returnDate,
+        adults: travelRequest.adults,
+        children: travelRequest.children,
+      },
     );
 
     const buttons: { label: string; callbackData: string }[] = [];
@@ -109,7 +131,23 @@ export class OfferViewerService {
       });
     }
 
-    return { text, buttons, totalOffers: offers.length, page: safePage, totalPages };
+    buttons.push({
+      label: '\u2716 Close',
+      callbackData: `offers:close`,
+    });
+
+    this.logger.log(
+      `[offer-list] action=rendered, requestId=${travelRequestId}, userId=${userId}, page=${safePage}, total=${offers.length}`,
+    );
+
+    return {
+      text,
+      buttons,
+      totalOffers: offers.length,
+      page: safePage,
+      totalPages,
+      travelRequestId,
+    };
   }
 
   async getOfferDetail(
@@ -126,12 +164,15 @@ export class OfferViewerService {
     });
 
     if (!offer) {
+      this.logger.warn(
+        `[offer-detail] action=not_found, offerId=${offerId}, userId=${userId}`,
+      );
       return { text: 'Offer not found.' };
     }
 
     if (offer.travelRequest.userId !== userId) {
       this.logger.warn(
-        `[offer-viewer] Unauthorized: user=${userId} tried to view offer owned by ${offer.travelRequest.userId}`,
+        `[offer-detail] action=unauthorized, offerId=${offerId}, userId=${userId}, ownerId=${offer.travelRequest.userId}`,
       );
       return { text: 'You are not authorized to view this offer.' };
     }
@@ -143,7 +184,7 @@ export class OfferViewerService {
         data: { status: OfferStatus.VIEWED },
       });
       this.logger.log(
-        `[offer-viewer] Offer ${offerId} status: SUBMITTED -> VIEWED`,
+        `[offer-detail] action=status_transition, offerId=${offerId}, from=SUBMITTED, to=VIEWED`,
       );
     }
 
@@ -165,8 +206,26 @@ export class OfferViewerService {
         label: '\u2b05 Back to offers',
         callbackData: `offers:b:${offer.travelRequestId}`,
       },
+      {
+        label: '\u2753 Ask question',
+        callbackData: `offers:ask:${offerId}`,
+      },
+      {
+        label: '\u2705 Accept offer',
+        callbackData: `offers:accept:${offerId}`,
+      },
     ];
 
-    return { text, buttons, imageFileIds, documentFileIds };
+    this.logger.log(
+      `[offer-detail] action=rendered, offerId=${offerId}, userId=${userId}, requestId=${offer.travelRequestId}, images=${imageFileIds.length}, docs=${documentFileIds.length}`,
+    );
+
+    return {
+      text,
+      buttons,
+      imageFileIds,
+      documentFileIds,
+      travelRequestId: offer.travelRequestId,
+    };
   }
 }

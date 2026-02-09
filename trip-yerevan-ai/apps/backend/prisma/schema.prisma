@@ -102,7 +102,10 @@ enum OfferItemType {
 }
 
 enum ProxyChatStatus {
-  ACTIVE
+  OPEN
+  BOOKED
+  MANAGER_ASSIGNED
+  COMPLETED
   CLOSED
   ARCHIVED
 }
@@ -111,6 +114,12 @@ enum MessageSenderType {
   USER
   AGENCY
   SYSTEM
+}
+
+enum MessageContentType {
+  TEXT
+  PHOTO
+  DOCUMENT
 }
 
 enum BookingStatus {
@@ -210,6 +219,7 @@ model User {
   applications         AgencyApplication[] @relation("ApplicationApplicant")
   reviewedApplications AgencyApplication[] @relation("ApplicationReviewer")
   verifiedAgencies     Agency[]            @relation("AgencyVerifier")
+  managedProxyChats    ProxyChat[]         @relation("ProxyChatManager")
 
   @@map("users")
 }
@@ -371,6 +381,7 @@ model Offer {
   items         OfferItem[]
   attachments   OfferAttachment[]
   booking       Booking?
+  proxyChats    ProxyChat[]
 
   @@unique([travelRequestId, agencyId])
   @@index([travelRequestId])
@@ -423,7 +434,10 @@ model ProxyChat {
   travelRequestId String          @db.Uuid
   userId          String          @db.Uuid
   agencyId        String          @db.Uuid
-  status          ProxyChatStatus @default(ACTIVE)
+  offerId         String?         @db.Uuid
+  status          ProxyChatStatus @default(OPEN)
+  closedReason    String?
+  managerId       String?         @db.Uuid
   createdAt       DateTime        @default(now())
   closedAt        DateTime?
 
@@ -431,28 +445,51 @@ model ProxyChat {
   travelRequest TravelRequest    @relation(fields: [travelRequestId], references: [id])
   user          User             @relation(fields: [userId], references: [id])
   agency        Agency           @relation(fields: [agencyId], references: [id])
+  offer         Offer?           @relation(fields: [offerId], references: [id])
+  manager       User?            @relation("ProxyChatManager", fields: [managerId], references: [id], onDelete: SetNull)
   messages      ProxyChatMessage[]
+  auditLogs     ChatAuditLog[]
 
   @@unique([travelRequestId, userId, agencyId])
   @@index([userId])
   @@index([agencyId])
+  @@index([status])
+  @@index([managerId])
   @@map("proxy_chats")
 }
 
 model ProxyChatMessage {
-  id          String            @id @default(uuid()) @db.Uuid
-  proxyChatId String            @db.Uuid
-  senderType  MessageSenderType
-  senderId    String            @db.Uuid
-  content     String            @db.VarChar(4000)
-  createdAt   DateTime          @default(now())
-  readAt      DateTime?
+  id             String             @id @default(uuid()) @db.Uuid
+  proxyChatId    String             @db.Uuid
+  senderType     MessageSenderType
+  senderId       String             @db.Uuid
+  content        String             @db.VarChar(4000)
+  contentType    MessageContentType @default(TEXT)
+  telegramFileId String?
+  createdAt      DateTime           @default(now())
+  readAt         DateTime?
 
   // Relations
   proxyChat ProxyChat @relation(fields: [proxyChatId], references: [id], onDelete: Cascade)
 
   @@index([proxyChatId, createdAt])
   @@map("proxy_chat_messages")
+}
+
+model ChatAuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  proxyChatId String   @db.Uuid
+  eventType   String
+  actorId     String?  @db.Uuid
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  proxyChat ProxyChat @relation(fields: [proxyChatId], references: [id], onDelete: Cascade)
+
+  @@index([proxyChatId, createdAt])
+  @@index([eventType])
+  @@map("chat_audit_logs")
 }
 
 // ============================================================================

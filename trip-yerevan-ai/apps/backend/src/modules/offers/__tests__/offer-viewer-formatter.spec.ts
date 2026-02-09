@@ -15,6 +15,7 @@ function makeOffer(overrides: Record<string, unknown> = {}) {
     nightsCount: null,
     airline: null,
     mealPlan: null,
+    validUntil: null,
     status: OfferStatus.SUBMITTED,
     ...overrides,
   };
@@ -130,8 +131,38 @@ describe('formatOfferListPage', () => {
     expect(text).not.toContain('Offers to ');
   });
 
-  it('should export OFFERS_PAGE_SIZE as 3', () => {
-    expect(OFFERS_PAGE_SIZE).toBe(3);
+  it('should export OFFERS_PAGE_SIZE as 5', () => {
+    expect(OFFERS_PAGE_SIZE).toBe(5);
+  });
+
+  it('should show validUntil date in offer line', () => {
+    const offers = [makeOffer({ validUntil: new Date('2026-04-15') })];
+    const text = formatOfferListPage(offers, null, 0, 1, 1);
+
+    expect(text).toContain('2026-04-15');
+  });
+
+  it('should show header with dates and travelers', () => {
+    const offers = [makeOffer()];
+    const text = formatOfferListPage(offers, 'Dubai', 0, 1, 1, {
+      departureDate: new Date('2026-03-10'),
+      returnDate: new Date('2026-03-17'),
+      adults: 2,
+      children: 1,
+    });
+
+    expect(text).toContain('2026-03-10');
+    expect(text).toContain('2026-03-17');
+    expect(text).toContain('2 adults');
+    expect(text).toContain('1 child');
+  });
+
+  it('should not show header dates when not provided', () => {
+    const offers = [makeOffer()];
+    const text = formatOfferListPage(offers, null, 0, 1, 1);
+
+    // No date/traveler line when header not provided
+    expect(text).not.toContain('adult');
   });
 });
 

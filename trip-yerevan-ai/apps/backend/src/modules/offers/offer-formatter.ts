@@ -241,7 +241,7 @@ export function formatSubmitSuccess(draft: OfferDraft): string {
 // Offer list page (paginated list shown to traveler)
 // =============================================================================
 
-export const OFFERS_PAGE_SIZE = 3;
+export const OFFERS_PAGE_SIZE = 5;
 
 export function formatOfferListPage(
   offers: Array<{
@@ -253,17 +253,39 @@ export function formatOfferListPage(
     nightsCount?: number | null;
     airline?: string | null;
     mealPlan?: MealPlan | null;
+    validUntil?: Date | null;
     status: OfferStatus;
   }>,
   destination: string | null,
   page: number,
   totalPages: number,
   totalOffers: number,
+  header?: {
+    departureDate?: Date | string | null;
+    returnDate?: Date | string | null;
+    adults?: number | null;
+    children?: number | null;
+  },
 ): string {
   const lines: string[] = [];
 
   const destText = destination ? ` to ${esc(destination)}` : '';
   lines.push(`\ud83d\udccb *Your Offers${destText}*`);
+
+  // Header: dates + travelers
+  const headerParts: string[] = [];
+  if (header?.departureDate && header?.returnDate) {
+    headerParts.push(`\ud83d\udcc5 ${formatDate(header.departureDate)} — ${formatDate(header.returnDate)}`);
+  }
+  if (header?.adults != null) {
+    let pax = `${header.adults} adult${header.adults > 1 ? 's' : ''}`;
+    if (header.children) pax += `, ${header.children} child${header.children > 1 ? 'ren' : ''}`;
+    headerParts.push(`\ud83d\udc65 ${pax}`);
+  }
+  if (headerParts.length > 0) {
+    lines.push(headerParts.join(' | '));
+  }
+
   lines.push(`${totalOffers} offer${totalOffers !== 1 ? 's' : ''} received`);
   lines.push('');
 
@@ -285,6 +307,7 @@ export function formatOfferListPage(
     if (o.airline) details.push(`\u2708\ufe0f ${esc(o.airline)}`);
     if (o.mealPlan) details.push(`\ud83c\udf7d ${mealLabel(o.mealPlan)}`);
     if (o.nightsCount) details.push(`${o.nightsCount} nights`);
+    if (o.validUntil) details.push(`\u23f3 ${formatDate(o.validUntil)}`);
     lines.push(details.join(' | '));
     lines.push('');
   }
