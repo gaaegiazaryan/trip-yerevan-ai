@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { Agency, AgencyStatus, AgentStatus, Prisma } from '@prisma/client';
+import { Agency, AgencyStatus, AgencyMembershipStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class AgenciesService {
@@ -9,7 +9,7 @@ export class AgenciesService {
   async findById(id: string): Promise<Agency | null> {
     return this.prisma.agency.findUnique({
       where: { id },
-      include: { agents: true },
+      include: { memberships: true },
     });
   }
 
@@ -45,13 +45,13 @@ export class AgenciesService {
     });
   }
 
-  async isActiveAgent(telegramId: bigint): Promise<boolean> {
-    const agent = await this.prisma.agencyAgent.findFirst({
+  async isActiveMember(telegramId: bigint): Promise<boolean> {
+    const membership = await this.prisma.agencyMembership.findFirst({
       where: {
         user: { telegramId },
-        status: AgentStatus.ACTIVE,
+        status: AgencyMembershipStatus.ACTIVE,
       },
     });
-    return !!agent;
+    return !!membership;
   }
 }

@@ -11,7 +11,7 @@ function createMockAgency(overrides: Record<string, unknown> = {}) {
     rating: 4.5,
     regions: ['Armenia'],
     specializations: ['PACKAGE'],
-    agents: [{ id: 'agent-001' }],
+    memberships: [{ id: 'agent-001' }],
     ...overrides,
   };
 }
@@ -32,7 +32,7 @@ describe('AgencyMatchingService', () => {
             regions: ['Georgia'],
             specializations: ['EXCURSION'],
             rating: 3.0,
-            agents: [{ id: 'agent-002' }],
+            memberships: [{ id: 'agent-002' }],
           }),
         ]),
       },
@@ -62,7 +62,7 @@ describe('AgencyMatchingService', () => {
         id: 'agency-no-chat',
         name: 'No Chat Agency',
         telegramChatId: null,
-        agents: [{ id: 'agent-x' }],
+        memberships: [{ id: 'agent-x' }],
       }),
     ]);
 
@@ -98,7 +98,7 @@ describe('AgencyMatchingService', () => {
         id: 'agency-no-agents',
         name: 'No Agents Agency',
         telegramChatId: BigInt(777888999),
-        agents: [], // no active agents
+        memberships: [], // no active agents
       }),
     ]);
 
@@ -132,7 +132,7 @@ describe('AgencyMatchingService', () => {
         specializations: ['PACKAGE'],
         rating: 5.0,
         telegramChatId: BigInt(100),
-        agents: [{ id: 'a1' }],
+        memberships: [{ id: 'a1' }],
       }),
       createMockAgency({
         id: 'agency-partial',
@@ -140,7 +140,7 @@ describe('AgencyMatchingService', () => {
         specializations: ['PACKAGE'],
         rating: 2.0,
         telegramChatId: BigInt(200),
-        agents: [{ id: 'a2' }],
+        memberships: [{ id: 'a2' }],
       }),
     ]);
 
@@ -166,7 +166,7 @@ describe('AgencyMatchingService', () => {
         specializations: [' Package '],
         rating: 4.0,
         telegramChatId: BigInt(300),
-        agents: [{ id: 'a3' }],
+        memberships: [{ id: 'a3' }],
       }),
     ]);
 
@@ -196,7 +196,7 @@ describe('AgencyMatchingService', () => {
         specializations: [],
         rating: 0,
         telegramChatId: BigInt(100),
-        agents: [{ id: 'a1' }],
+        memberships: [{ id: 'a1' }],
       }),
       createMockAgency({
         id: 'agency-b',
@@ -204,7 +204,7 @@ describe('AgencyMatchingService', () => {
         specializations: [],
         rating: 0,
         telegramChatId: BigInt(200),
-        agents: [{ id: 'a2' }],
+        memberships: [{ id: 'a2' }],
       }),
     ]);
 

@@ -183,7 +183,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     try {
       // Block agency agents from creating travel requests
-      if (await this.agenciesService.isActiveAgent(telegramId)) {
+      if (await this.agenciesService.isActiveMember(telegramId)) {
         await this.telegramService.sendMessage(
           chatId,
           'Agency accounts cannot create travel requests. Use /agency for agency features.',

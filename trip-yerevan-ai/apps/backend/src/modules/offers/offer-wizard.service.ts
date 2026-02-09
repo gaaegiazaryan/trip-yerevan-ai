@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import {
-  AgentRole,
-  AgentStatus,
   Currency,
   OfferStatus,
   RfqDeliveryStatus,
@@ -16,13 +14,17 @@ import {
   MAX_NOTE_LENGTH,
   VALIDITY_OPTIONS,
 } from './offer-wizard.types';
+import { AgencyMembershipService } from '../agencies/agency-membership.service';
 
 @Injectable()
 export class OfferWizardService {
   private readonly logger = new Logger(OfferWizardService.name);
   private readonly wizards = new Map<number, OfferWizardState>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly membershipService: AgencyMembershipService,
+  ) {}
 
   hasActiveWizard(chatId: number): boolean {
     return this.wizards.has(chatId);
@@ -83,7 +85,7 @@ export class OfferWizardService {
       step: OfferWizardStep.PRICE,
       travelRequestId,
       agencyId: agent.agencyId,
-      agentId: agent.id,
+      membershipId: agent.id,
     });
 
     this.logger.log(
@@ -325,7 +327,7 @@ export class OfferWizardService {
           data: {
             travelRequestId: state.travelRequestId,
             agencyId: state.agencyId,
-            agentId: state.agentId,
+            membershipId: state.membershipId,
             status: OfferStatus.SUBMITTED,
             totalPrice: state.priceTotal!,
             currency: state.currency!,
@@ -397,10 +399,8 @@ export class OfferWizardService {
     telegramId: bigint,
     chatId: number,
   ): Promise<{ id: string; agencyId: string } | null> {
-    // 1. Find user by telegramId
     const user = await this.prisma.user.findUnique({
       where: { telegramId },
-      include: { agencyAgent: true },
     });
 
     if (!user) {
@@ -408,40 +408,7 @@ export class OfferWizardService {
       return null;
     }
 
-    // 2. If user already has an AgencyAgent record, use it
-    if (user.agencyAgent) {
-      return { id: user.agencyAgent.id, agencyId: user.agencyAgent.agencyId };
-    }
-
-    // 3. Bootstrap: auto-create AgencyAgent if chat matches an agency's telegramChatId
-    const agency = await this.prisma.agency.findFirst({
-      where: { telegramChatId: BigInt(chatId) },
-    });
-
-    if (!agency) {
-      this.logger.warn(
-        `[wizard:no-agency] User ${user.id} (telegramId=${telegramId}) ` +
-          `has no AgencyAgent and chatId=${chatId} doesn't match any agency`,
-      );
-      return null;
-    }
-
-    // Auto-create agent record
-    const agent = await this.prisma.agencyAgent.create({
-      data: {
-        agencyId: agency.id,
-        userId: user.id,
-        role: AgentRole.OWNER,
-        status: AgentStatus.ACTIVE,
-      },
-    });
-
-    this.logger.log(
-      `[wizard:agent-created] Auto-created AgencyAgent ${agent.id} ` +
-        `for user ${user.id} in agency ${agency.id}`,
-    );
-
-    return { id: agent.id, agencyId: agent.agencyId };
+    return this.membershipService.resolveOrCreateMembership(user.id, chatId);
   }
 
   // ---------------------------------------------------------------------------

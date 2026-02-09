@@ -1,18 +1,13 @@
 import { OfferWizardService } from '../offer-wizard.service';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
+import { AgencyMembershipService } from '../../agencies/agency-membership.service';
 import { OfferWizardStep, isOfferSubmitResult } from '../offer-wizard.types';
-import { AgentRole, AgentStatus, OfferStatus, RfqDeliveryStatus } from '@prisma/client';
+import { OfferStatus, RfqDeliveryStatus } from '@prisma/client';
 
 function createMockPrisma() {
   return {
     user: {
       findUnique: jest.fn(),
-    },
-    agency: {
-      findFirst: jest.fn(),
-    },
-    agencyAgent: {
-      create: jest.fn(),
     },
     offer: {
       findUnique: jest.fn(),
@@ -29,19 +24,30 @@ function createMockPrisma() {
   };
 }
 
+function createMockMembershipService() {
+  return {
+    resolveOrCreateMembership: jest.fn(),
+  };
+}
+
 describe('OfferWizardService', () => {
   let service: OfferWizardService;
   let prisma: ReturnType<typeof createMockPrisma>;
+  let membershipService: ReturnType<typeof createMockMembershipService>;
 
   const CHAT_ID = 123456789;
   const TELEGRAM_ID = BigInt(111222333);
   const TRAVEL_REQUEST_ID = 'req-001';
   const AGENCY_ID = 'agency-001';
-  const AGENT_ID = 'agent-001';
+  const MEMBERSHIP_ID = 'membership-001';
 
   beforeEach(() => {
     prisma = createMockPrisma();
-    service = new OfferWizardService(prisma as unknown as PrismaService);
+    membershipService = createMockMembershipService();
+    service = new OfferWizardService(
+      prisma as unknown as PrismaService,
+      membershipService as unknown as AgencyMembershipService,
+    );
   });
 
   afterEach(() => {
@@ -49,16 +55,27 @@ describe('OfferWizardService', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Helper: set up a user with resolved membership
+  // -------------------------------------------------------------------------
+
+  function mockResolvedUser() {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-001',
+      telegramId: TELEGRAM_ID,
+    });
+    membershipService.resolveOrCreateMembership.mockResolvedValue({
+      id: MEMBERSHIP_ID,
+      agencyId: AGENCY_ID,
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Start wizard + agent resolution
   // -------------------------------------------------------------------------
 
   describe('startWizard', () => {
-    it('should start wizard when agent is resolved via AgencyAgent record', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+    it('should start wizard when membership is resolved', async () => {
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -77,18 +94,13 @@ describe('OfferWizardService', () => {
       expect(service.hasActiveWizard(CHAT_ID)).toBe(true);
     });
 
-    it('should auto-create AgencyAgent when chat matches agency telegramChatId', async () => {
+    it('should auto-create membership when resolveOrCreateMembership creates one', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-001',
         telegramId: TELEGRAM_ID,
-        agencyAgent: null,
       });
-      prisma.agency.findFirst.mockResolvedValue({
-        id: AGENCY_ID,
-        telegramChatId: BigInt(CHAT_ID),
-      });
-      prisma.agencyAgent.create.mockResolvedValue({
-        id: AGENT_ID,
+      membershipService.resolveOrCreateMembership.mockResolvedValue({
+        id: MEMBERSHIP_ID,
         agencyId: AGENCY_ID,
       });
       prisma.offer.findUnique.mockResolvedValue(null);
@@ -103,14 +115,10 @@ describe('OfferWizardService', () => {
         TELEGRAM_ID,
       );
 
-      expect(prisma.agencyAgent.create).toHaveBeenCalledWith({
-        data: {
-          agencyId: AGENCY_ID,
-          userId: 'user-001',
-          role: AgentRole.OWNER,
-          status: AgentStatus.ACTIVE,
-        },
-      });
+      expect(membershipService.resolveOrCreateMembership).toHaveBeenCalledWith(
+        'user-001',
+        CHAT_ID,
+      );
       expect(result.text).toContain('total price');
     });
 
@@ -127,13 +135,12 @@ describe('OfferWizardService', () => {
       expect(service.hasActiveWizard(CHAT_ID)).toBe(false);
     });
 
-    it('should reject if user has no AgencyAgent and chat does not match any agency', async () => {
+    it('should reject if no membership can be resolved', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-001',
         telegramId: TELEGRAM_ID,
-        agencyAgent: null,
       });
-      prisma.agency.findFirst.mockResolvedValue(null);
+      membershipService.resolveOrCreateMembership.mockResolvedValue(null);
 
       const result = await service.startWizard(
         CHAT_ID,
@@ -145,11 +152,7 @@ describe('OfferWizardService', () => {
     });
 
     it('should block duplicate offer (idempotency)', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue({
         id: 'existing-offer-001',
         travelRequestId: TRAVEL_REQUEST_ID,
@@ -167,11 +170,7 @@ describe('OfferWizardService', () => {
     });
 
     it('should reject if travel request not found', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue(null);
 
@@ -191,11 +190,7 @@ describe('OfferWizardService', () => {
 
   describe('handleTextInput — PRICE step', () => {
     beforeEach(async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -251,11 +246,7 @@ describe('OfferWizardService', () => {
 
   describe('handleCallback — CURRENCY step', () => {
     beforeEach(async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -306,11 +297,7 @@ describe('OfferWizardService', () => {
 
   describe('handleCallback — VALID_UNTIL step', () => {
     beforeEach(async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -356,11 +343,7 @@ describe('OfferWizardService', () => {
 
   describe('handleTextInput — NOTE step', () => {
     beforeEach(async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -401,11 +384,7 @@ describe('OfferWizardService', () => {
 
   describe('handleCallback — offer:submit', () => {
     beforeEach(async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,
@@ -476,11 +455,7 @@ describe('OfferWizardService', () => {
 
   describe('handleCallback — offer:cancel', () => {
     it('should clear wizard state', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-001',
-        telegramId: TELEGRAM_ID,
-        agencyAgent: { id: AGENT_ID, agencyId: AGENCY_ID },
-      });
+      mockResolvedUser();
       prisma.offer.findUnique.mockResolvedValue(null);
       prisma.travelRequest.findUnique.mockResolvedValue({
         id: TRAVEL_REQUEST_ID,

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
-import { AgencyStatus, AgentStatus } from '@prisma/client';
+import { AgencyStatus, AgencyMembershipStatus } from '@prisma/client';
 import { AgencyMatchResult } from '../types';
 
 const MIN_RATING_THRESHOLD = 0;
@@ -65,8 +65,8 @@ export class AgencyMatchingService {
         rating: { gte: MIN_RATING_THRESHOLD },
       },
       include: {
-        agents: {
-          where: { status: AgentStatus.ACTIVE },
+        memberships: {
+          where: { status: AgencyMembershipStatus.ACTIVE },
           select: { id: true },
         },
       },
@@ -92,7 +92,7 @@ export class AgencyMatchingService {
           `regions=[${agency.regions.join(', ')}], ` +
           `specializations=[${agency.specializations.join(', ')}], ` +
           `telegramChatId=${agency.telegramChatId ?? 'null'}, ` +
-          `activeAgents=${agency.agents.length}`,
+          `activeMembers=${agency.memberships.length}`,
       );
 
       if (!agency.telegramChatId) {
@@ -122,14 +122,14 @@ export class AgencyMatchingService {
         return false;
       }
 
-      if (agency.agents.length === 0) {
+      if (agency.memberships.length === 0) {
         rejected.push({
           agencyId: agency.id,
           reason: RejectionReason.NO_ACTIVE_AGENTS,
-          detail: 'no active AgencyAgent records',
+          detail: 'no active membership records',
         });
         this.logger.warn(
-          `[agency-reject] agencyId=${agency.id}: ${RejectionReason.NO_ACTIVE_AGENTS} — no active AgencyAgent records`,
+          `[agency-reject] agencyId=${agency.id}: ${RejectionReason.NO_ACTIVE_AGENTS} — no active membership records`,
         );
         return false;
       }

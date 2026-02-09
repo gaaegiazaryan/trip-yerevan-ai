@@ -3,8 +3,8 @@ import { PrismaService } from '../../infra/prisma/prisma.service';
 import {
   AgencyApplicationStatus,
   AgencyStatus,
-  AgentRole,
-  AgentStatus,
+  AgencyRole,
+  AgencyMembershipStatus,
 } from '@prisma/client';
 import {
   AgencyWizardStep,
@@ -251,12 +251,12 @@ export class AgencyApplicationService {
       });
 
       if (user) {
-        await tx.agencyAgent.create({
+        await tx.agencyMembership.create({
           data: {
             agencyId: agency.id,
             userId: user.id,
-            role: AgentRole.OWNER,
-            status: AgentStatus.ACTIVE,
+            role: AgencyRole.OWNER,
+            status: AgencyMembershipStatus.ACTIVE,
           },
         });
       }

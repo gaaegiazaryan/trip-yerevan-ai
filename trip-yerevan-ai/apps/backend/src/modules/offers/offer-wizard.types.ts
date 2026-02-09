@@ -12,7 +12,7 @@ export interface OfferWizardState {
   step: OfferWizardStep;
   travelRequestId: string;
   agencyId: string;
-  agentId: string;
+  membershipId: string;
   priceTotal?: number;
   currency?: Currency;
   validUntil?: Date;

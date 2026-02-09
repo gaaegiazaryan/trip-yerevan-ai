@@ -18,7 +18,7 @@ function createMockPrisma() {
       create: jest.fn(),
       update: jest.fn(),
     },
-    agencyAgent: {
+    agencyMembership: {
       create: jest.fn(),
     },
     user: {
@@ -347,7 +347,7 @@ describe('AgencyApplicationService', () => {
       const mockTx = {
         agency: { create: jest.fn().mockResolvedValue({ id: 'agency-new' }) },
         user: { findUnique: jest.fn().mockResolvedValue({ id: USER_ID, telegramId: BigInt(111222333) }) },
-        agencyAgent: { create: jest.fn().mockResolvedValue({}) },
+        agencyMembership: { create: jest.fn().mockResolvedValue({}) },
         agencyApplication: { update: jest.fn().mockResolvedValue({}) },
       };
 

@@ -1,6 +1,6 @@
 import { AgencyManagementService } from '../agency-management.service';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
-import { AgentRole, AgentStatus, AgencyStatus, RfqDeliveryStatus } from '@prisma/client';
+import { AgencyRole, AgencyMembershipStatus, AgencyStatus, RfqDeliveryStatus } from '@prisma/client';
 
 function createMockPrisma() {
   return {
@@ -12,7 +12,7 @@ function createMockPrisma() {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
-    agencyAgent: {
+    agencyMembership: {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
@@ -25,8 +25,8 @@ function createMockPrisma() {
 
 function makeUser(
   overrides: {
-    role?: AgentRole;
-    agentStatus?: AgentStatus;
+    role?: AgencyRole;
+    membershipStatus?: AgencyMembershipStatus;
     agencyStatus?: AgencyStatus;
     agencyId?: string;
     userId?: string;
@@ -34,8 +34,8 @@ function makeUser(
   } = {},
 ) {
   const {
-    role = AgentRole.OWNER,
-    agentStatus = AgentStatus.ACTIVE,
+    role = AgencyRole.OWNER,
+    membershipStatus = AgencyMembershipStatus.ACTIVE,
     agencyStatus = AgencyStatus.APPROVED,
     agencyId = 'agency-001',
     userId = 'user-001',
@@ -47,17 +47,21 @@ function makeUser(
     firstName: 'John',
     lastName: 'Doe',
     telegramId: BigInt(111222333),
-    agencyAgent: {
-      agencyId,
-      userId,
-      role,
-      status: agentStatus,
-      agency: {
-        id: agencyId,
-        name: agencyName,
-        status: agencyStatus,
-      },
-    },
+    memberships: membershipStatus === AgencyMembershipStatus.ACTIVE
+      ? [
+          {
+            agencyId,
+            userId,
+            role,
+            status: membershipStatus,
+            agency: {
+              id: agencyId,
+              name: agencyName,
+              status: agencyStatus,
+            },
+          },
+        ]
+      : [],
   };
 }
 
@@ -92,18 +96,20 @@ describe('AgencyManagementService', () => {
       });
     });
 
-    it('should return null for MANAGER role', async () => {
-      prisma.user.findUnique.mockResolvedValue(
-        makeUser({ role: AgentRole.MANAGER }),
-      );
+    it('should return null for AGENT role', async () => {
+      // Prisma's include.where { role: OWNER } filters out AGENT memberships
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-001',
+        memberships: [],
+      });
 
       const result = await service.getOwnerAgency(TELEGRAM_ID);
       expect(result).toBeNull();
     });
 
-    it('should return null for INACTIVE agent', async () => {
+    it('should return null for DISABLED membership', async () => {
       prisma.user.findUnique.mockResolvedValue(
-        makeUser({ agentStatus: AgentStatus.INACTIVE }),
+        makeUser({ membershipStatus: AgencyMembershipStatus.DISABLED }),
       );
 
       const result = await service.getOwnerAgency(TELEGRAM_ID);
@@ -119,10 +125,10 @@ describe('AgencyManagementService', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null for user without agencyAgent', async () => {
+    it('should return null for user without memberships', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-001',
-        agencyAgent: null,
+        memberships: [],
       });
 
       const result = await service.getOwnerAgency(TELEGRAM_ID);
@@ -150,24 +156,24 @@ describe('AgencyManagementService', () => {
         agencyId: 'agency-001',
         userId: 'user-001',
         agencyName: 'Test Agency',
-        role: AgentRole.OWNER,
+        role: AgencyRole.OWNER,
       });
     });
 
-    it('should return for MANAGER', async () => {
+    it('should return for AGENT', async () => {
       prisma.user.findUnique.mockResolvedValue(
-        makeUser({ role: AgentRole.MANAGER }),
+        makeUser({ role: AgencyRole.AGENT }),
       );
 
       const result = await service.getAgentAgency(TELEGRAM_ID);
       expect(result).toEqual(
-        expect.objectContaining({ role: AgentRole.MANAGER }),
+        expect.objectContaining({ role: AgencyRole.AGENT }),
       );
     });
 
-    it('should return null for INACTIVE agent', async () => {
+    it('should return null for DISABLED membership', async () => {
       prisma.user.findUnique.mockResolvedValue(
-        makeUser({ agentStatus: AgentStatus.INACTIVE }),
+        makeUser({ membershipStatus: AgencyMembershipStatus.DISABLED }),
       );
 
       const result = await service.getAgentAgency(TELEGRAM_ID);
@@ -199,9 +205,11 @@ describe('AgencyManagementService', () => {
     });
 
     it('should reject non-OWNER', async () => {
-      prisma.user.findUnique.mockResolvedValue(
-        makeUser({ role: AgentRole.MANAGER }),
-      );
+      // Prisma's include.where { role: OWNER } returns empty memberships for AGENT
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-001',
+        memberships: [],
+      });
 
       const result = await service.setAgencyChat(
         TELEGRAM_ID,
@@ -231,9 +239,11 @@ describe('AgencyManagementService', () => {
     });
 
     it('should reject non-OWNER', async () => {
-      prisma.user.findUnique.mockResolvedValue(
-        makeUser({ role: AgentRole.MANAGER }),
-      );
+      // Prisma's include.where { role: OWNER } returns empty memberships for AGENT
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-001',
+        memberships: [],
+      });
 
       const result = await service.startAddManager(CHAT_ID, TELEGRAM_ID);
 
@@ -264,15 +274,15 @@ describe('AgencyManagementService', () => {
       prisma.user.findUnique.mockReset();
     });
 
-    it('should create MANAGER agent for valid user', async () => {
+    it('should create AGENT membership for valid user', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-target',
         firstName: 'Jane',
         lastName: 'Smith',
         telegramId: TARGET_TG_ID,
       });
-      prisma.agencyAgent.findUnique.mockResolvedValue(null);
-      prisma.agencyAgent.create.mockResolvedValue({});
+      prisma.agencyMembership.findUnique.mockResolvedValue(null);
+      prisma.agencyMembership.create.mockResolvedValue({});
 
       const result = await service.handleAddManagerInput(
         CHAT_ID,
@@ -281,12 +291,12 @@ describe('AgencyManagementService', () => {
 
       expect(result.text).toContain('Manager added successfully');
       expect(result.text).toContain('Jane Smith');
-      expect(prisma.agencyAgent.create).toHaveBeenCalledWith({
+      expect(prisma.agencyMembership.create).toHaveBeenCalledWith({
         data: {
           agencyId: 'agency-001',
           userId: 'user-target',
-          role: AgentRole.MANAGER,
-          status: AgentStatus.ACTIVE,
+          role: AgencyRole.AGENT,
+          status: AgencyMembershipStatus.ACTIVE,
         },
       });
       expect(service.hasActiveAddManager(CHAT_ID)).toBe(false);
@@ -302,7 +312,7 @@ describe('AgencyManagementService', () => {
 
       expect(result.text).toContain('not found');
       expect(result.text).toContain('/start');
-      expect(prisma.agencyAgent.create).not.toHaveBeenCalled();
+      expect(prisma.agencyMembership.create).not.toHaveBeenCalled();
     });
 
     it('should reject user already in same agency', async () => {
@@ -312,8 +322,9 @@ describe('AgencyManagementService', () => {
         lastName: null,
         telegramId: TARGET_TG_ID,
       });
-      prisma.agencyAgent.findUnique.mockResolvedValue({
+      prisma.agencyMembership.findUnique.mockResolvedValue({
         agencyId: 'agency-001',
+        userId: 'user-target',
       });
 
       const result = await service.handleAddManagerInput(
@@ -322,27 +333,27 @@ describe('AgencyManagementService', () => {
       );
 
       expect(result.text).toContain('already a member of your agency');
-      expect(prisma.agencyAgent.create).not.toHaveBeenCalled();
+      expect(prisma.agencyMembership.create).not.toHaveBeenCalled();
     });
 
-    it('should reject user already in another agency', async () => {
+    it('should allow user already in another agency (multi-agency)', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-target',
         firstName: 'Jane',
-        lastName: null,
+        lastName: 'Doe',
         telegramId: TARGET_TG_ID,
       });
-      prisma.agencyAgent.findUnique.mockResolvedValue({
-        agencyId: 'agency-other',
-      });
+      // No membership in THIS agency
+      prisma.agencyMembership.findUnique.mockResolvedValue(null);
+      prisma.agencyMembership.create.mockResolvedValue({});
 
       const result = await service.handleAddManagerInput(
         CHAT_ID,
         TARGET_TG_ID,
       );
 
-      expect(result.text).toContain('another agency');
-      expect(prisma.agencyAgent.create).not.toHaveBeenCalled();
+      expect(result.text).toContain('Manager added successfully');
+      expect(prisma.agencyMembership.create).toHaveBeenCalled();
     });
 
     it('should return error when no active flow', async () => {
@@ -375,13 +386,13 @@ describe('AgencyManagementService', () => {
         name: 'Test Agency',
         status: AgencyStatus.APPROVED,
         agencyTelegramChatId: BigInt(-1001234567890),
-        agents: [
+        memberships: [
           {
-            role: AgentRole.OWNER,
+            role: AgencyRole.OWNER,
             user: { firstName: 'John', lastName: 'Doe' },
           },
           {
-            role: AgentRole.MANAGER,
+            role: AgencyRole.AGENT,
             user: { firstName: 'Jane', lastName: null },
           },
         ],
@@ -409,17 +420,17 @@ describe('AgencyManagementService', () => {
       expect(result!.buttons![1].callbackData).toBe('mgmt:set_chat_info');
     });
 
-    it('should return dashboard without buttons for MANAGER', async () => {
+    it('should return dashboard without buttons for AGENT', async () => {
       prisma.user.findUnique.mockResolvedValue(
-        makeUser({ role: AgentRole.MANAGER }),
+        makeUser({ role: AgencyRole.AGENT }),
       );
       prisma.agency.findUniqueOrThrow.mockResolvedValue({
         name: 'Test Agency',
         status: AgencyStatus.APPROVED,
         agencyTelegramChatId: null,
-        agents: [
+        memberships: [
           {
-            role: AgentRole.OWNER,
+            role: AgencyRole.OWNER,
             user: { firstName: 'John', lastName: 'Doe' },
           },
         ],
@@ -433,7 +444,7 @@ describe('AgencyManagementService', () => {
       expect(result!.buttons).toHaveLength(0);
     });
 
-    it('should return null for non-agent user', async () => {
+    it('should return null for non-member user', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
       const result = await service.buildDashboard(TELEGRAM_ID);
@@ -446,8 +457,8 @@ describe('AgencyManagementService', () => {
   // ---------------------------------------------------------------------------
 
   describe('findActiveAgentTelegramIds', () => {
-    it('should return telegramIds for active agents', async () => {
-      prisma.agencyAgent.findMany.mockResolvedValue([
+    it('should return telegramIds for active members', async () => {
+      prisma.agencyMembership.findMany.mockResolvedValue([
         { user: { telegramId: BigInt(111) } },
         { user: { telegramId: BigInt(222) } },
       ]);
@@ -455,14 +466,14 @@ describe('AgencyManagementService', () => {
       const ids = await service.findActiveAgentTelegramIds('agency-001');
 
       expect(ids).toEqual([BigInt(111), BigInt(222)]);
-      expect(prisma.agencyAgent.findMany).toHaveBeenCalledWith({
-        where: { agencyId: 'agency-001', status: AgentStatus.ACTIVE },
+      expect(prisma.agencyMembership.findMany).toHaveBeenCalledWith({
+        where: { agencyId: 'agency-001', status: AgencyMembershipStatus.ACTIVE },
         include: { user: { select: { telegramId: true } } },
       });
     });
 
-    it('should return empty array when no active agents', async () => {
-      prisma.agencyAgent.findMany.mockResolvedValue([]);
+    it('should return empty array when no active members', async () => {
+      prisma.agencyMembership.findMany.mockResolvedValue([]);
 
       const ids = await service.findActiveAgentTelegramIds('agency-001');
       expect(ids).toEqual([]);

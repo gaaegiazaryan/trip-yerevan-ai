@@ -41,15 +41,16 @@ enum AgencyStatus {
   BLOCKED
 }
 
-enum AgentRole {
+enum AgencyRole {
   OWNER
-  MANAGER
   AGENT
+  VIEWER
 }
 
-enum AgentStatus {
+enum AgencyMembershipStatus {
+  INVITED
   ACTIVE
-  INACTIVE
+  DISABLED
 }
 
 enum TravelRequestStatus {
@@ -164,7 +165,8 @@ model User {
   updatedAt         DateTime @updatedAt
 
   // Relations
-  agencyAgent          AgencyAgent?
+  memberships          AgencyMembership[]
+  invitedMemberships   AgencyMembership[] @relation("MembershipInviter")
   travelRequests       TravelRequest[]
   bookings             Booking[]
   proxyChats           ProxyChat[]
@@ -200,7 +202,7 @@ model Agency {
 
   // Relations
   verifiedBy       User?        @relation("AgencyVerifier", fields: [verifiedByUserId], references: [id])
-  agents           AgencyAgent[]
+  memberships      AgencyMembership[]
   offers           Offer[]
   proxyChats       ProxyChat[]
   bookings         Booking[]
@@ -209,21 +211,25 @@ model Agency {
   @@map("agencies")
 }
 
-model AgencyAgent {
-  id        String      @id @default(uuid()) @db.Uuid
-  agencyId  String      @db.Uuid
-  userId    String      @unique @db.Uuid
-  role      AgentRole
-  status    AgentStatus @default(ACTIVE)
-  createdAt DateTime    @default(now())
+model AgencyMembership {
+  id              String                  @id @default(uuid()) @db.Uuid
+  agencyId        String                  @db.Uuid
+  userId          String                  @db.Uuid
+  role            AgencyRole
+  status          AgencyMembershipStatus  @default(ACTIVE)
+  invitedByUserId String?                 @db.Uuid
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
 
   // Relations
-  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  offers Offer[]
+  agency    Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?  @relation("MembershipInviter", fields: [invitedByUserId], references: [id])
+  offers    Offer[]
 
   @@unique([agencyId, userId])
-  @@map("agency_agents")
+  @@index([userId])
+  @@map("agency_memberships")
 }
 
 // ============================================================================
@@ -283,7 +289,7 @@ model Offer {
   id              String      @id @default(uuid()) @db.Uuid
   travelRequestId String      @db.Uuid
   agencyId        String      @db.Uuid
-  agentId         String      @db.Uuid
+  membershipId    String      @db.Uuid
   status          OfferStatus @default(DRAFT)
   totalPrice      Decimal     @db.Decimal(12, 2)
   currency        Currency
@@ -295,7 +301,7 @@ model Offer {
   // Relations
   travelRequest TravelRequest @relation(fields: [travelRequestId], references: [id])
   agency        Agency        @relation(fields: [agencyId], references: [id])
-  agent         AgencyAgent   @relation(fields: [agentId], references: [id])
+  membership    AgencyMembership @relation(fields: [membershipId], references: [id])
   items         OfferItem[]
   booking       Booking?
 

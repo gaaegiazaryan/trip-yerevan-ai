@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import {
-  AgentRole,
-  AgentStatus,
+  AgencyRole,
+  AgencyMembershipStatus,
   AgencyStatus,
   RfqDeliveryStatus,
 } from '@prisma/client';
@@ -20,7 +20,7 @@ interface OwnerAgencyInfo {
 }
 
 interface AgentAgencyInfo extends OwnerAgencyInfo {
-  role: AgentRole;
+  role: AgencyRole;
 }
 
 @Injectable()
@@ -38,21 +38,24 @@ export class AgencyManagementService {
     const user = await this.prisma.user.findUnique({
       where: { telegramId },
       include: {
-        agencyAgent: {
+        memberships: {
+          where: { role: AgencyRole.OWNER, status: AgencyMembershipStatus.ACTIVE },
           include: { agency: true },
         },
       },
     });
 
-    if (!user?.agencyAgent) return null;
-    if (user.agencyAgent.role !== AgentRole.OWNER) return null;
-    if (user.agencyAgent.status !== AgentStatus.ACTIVE) return null;
-    if (user.agencyAgent.agency.status !== AgencyStatus.APPROVED) return null;
+    if (!user) return null;
+
+    const ownerMembership = user.memberships.find(
+      (m) => m.agency.status === AgencyStatus.APPROVED,
+    );
+    if (!ownerMembership) return null;
 
     return {
-      agencyId: user.agencyAgent.agencyId,
+      agencyId: ownerMembership.agencyId,
       userId: user.id,
-      agencyName: user.agencyAgent.agency.name,
+      agencyName: ownerMembership.agency.name,
     };
   }
 
@@ -60,21 +63,25 @@ export class AgencyManagementService {
     const user = await this.prisma.user.findUnique({
       where: { telegramId },
       include: {
-        agencyAgent: {
+        memberships: {
+          where: { status: AgencyMembershipStatus.ACTIVE },
           include: { agency: true },
         },
       },
     });
 
-    if (!user?.agencyAgent) return null;
-    if (user.agencyAgent.status !== AgentStatus.ACTIVE) return null;
-    if (user.agencyAgent.agency.status !== AgencyStatus.APPROVED) return null;
+    if (!user) return null;
+
+    const membership = user.memberships.find(
+      (m) => m.agency.status === AgencyStatus.APPROVED,
+    );
+    if (!membership) return null;
 
     return {
-      agencyId: user.agencyAgent.agencyId,
+      agencyId: membership.agencyId,
       userId: user.id,
-      agencyName: user.agencyAgent.agency.name,
-      role: user.agencyAgent.role,
+      agencyName: membership.agency.name,
+      role: membership.role,
     };
   }
 
@@ -169,25 +176,22 @@ export class AgencyManagementService {
       };
     }
 
-    // 2. Check existing agency membership (userId is unique on agencyAgent)
-    const existingAgent = await this.prisma.agencyAgent.findUnique({
-      where: { userId: user.id },
+    // 2. Check existing membership in this agency
+    const existingMembership = await this.prisma.agencyMembership.findUnique({
+      where: { agencyId_userId: { agencyId: state.agencyId, userId: user.id } },
     });
 
-    if (existingAgent) {
-      if (existingAgent.agencyId === state.agencyId) {
-        return { text: 'This user is already a member of your agency.' };
-      }
-      return { text: 'This user is already a member of another agency.' };
+    if (existingMembership) {
+      return { text: 'This user is already a member of your agency.' };
     }
 
-    // 3. Create agent
-    await this.prisma.agencyAgent.create({
+    // 3. Create membership (multi-agency is allowed)
+    await this.prisma.agencyMembership.create({
       data: {
         agencyId: state.agencyId,
         userId: user.id,
-        role: AgentRole.MANAGER,
-        status: AgentStatus.ACTIVE,
+        role: AgencyRole.AGENT,
+        status: AgencyMembershipStatus.ACTIVE,
       },
     });
 
@@ -216,8 +220,8 @@ export class AgencyManagementService {
     const agency = await this.prisma.agency.findUniqueOrThrow({
       where: { id: agent.agencyId },
       include: {
-        agents: {
-          where: { status: AgentStatus.ACTIVE },
+        memberships: {
+          where: { status: AgencyMembershipStatus.ACTIVE },
           include: {
             user: { select: { firstName: true, lastName: true } },
           },
@@ -231,7 +235,7 @@ export class AgencyManagementService {
       `*${agency.name}* — Agency Dashboard`,
       '',
       `*Status:* ${agency.status}`,
-      `*Managers:* ${agency.agents.length}`,
+      `*Members:* ${agency.memberships.length}`,
       `*Agency chat:* ${agency.agencyTelegramChatId ? 'Set' : 'Not set'}`,
       '',
       '*RFQ Statistics:*',
@@ -242,12 +246,12 @@ export class AgencyManagementService {
       '*Team:*',
     ];
 
-    for (const a of agency.agents) {
-      const name = `${a.user.firstName}${a.user.lastName ? ' ' + a.user.lastName : ''}`;
-      lines.push(`  \\- ${name} (${a.role})`);
+    for (const m of agency.memberships) {
+      const name = `${m.user.firstName}${m.user.lastName ? ' ' + m.user.lastName : ''}`;
+      lines.push(`  \\- ${name} (${m.role})`);
     }
 
-    const isOwner = agent.role === AgentRole.OWNER;
+    const isOwner = agent.role === AgencyRole.OWNER;
 
     const buttons = isOwner
       ? [
@@ -264,11 +268,11 @@ export class AgencyManagementService {
   // ---------------------------------------------------------------------------
 
   async findActiveAgentTelegramIds(agencyId: string): Promise<bigint[]> {
-    const agents = await this.prisma.agencyAgent.findMany({
-      where: { agencyId, status: AgentStatus.ACTIVE },
+    const members = await this.prisma.agencyMembership.findMany({
+      where: { agencyId, status: AgencyMembershipStatus.ACTIVE },
       include: { user: { select: { telegramId: true } } },
     });
-    return agents.map((a) => a.user.telegramId);
+    return members.map((m) => m.user.telegramId);
   }
 
   // ---------------------------------------------------------------------------
