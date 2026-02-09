@@ -4,8 +4,11 @@
   "private": true,
   "scripts": {
     "build": "nest build",
+    "clean": "rm -rf dist .tsbuildinfo",
     "start": "nest start",
+    "prestart:dev": "npm run clean",
     "start:dev": "nest start --watch",
+    "prestart:debug": "npm run clean",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "lint": "eslint \"src/**/*.ts\"",

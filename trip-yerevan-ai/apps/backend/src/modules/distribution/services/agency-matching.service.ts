@@ -40,7 +40,7 @@ export class AgencyMatchingService {
    *
    *   1. Status must be APPROVED
    *   2. Must have a telegramChatId
-   *   3. Must have at least one active AgencyAgent
+   *   3. Must have at least one active AgencyMembership
    *   4. Must NOT match excludeChatId (self-delivery prevention)
    *   5. Score by: region match (+3), specialization match (+2), rating bonus (+0-1)
    *      Scoring is ADDITIVE (OR) — an agency does NOT need both region AND specialization

@@ -27,6 +27,7 @@ import { BotContext } from './telegram-context';
 export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramUpdate.name);
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private stopping = false;
 
   constructor(
     @Inject(TELEGRAM_BOT) private readonly bot: TelegramBot,
@@ -41,6 +42,9 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // Fail fast if compiled JS is out of sync with source (stale dist guard)
+    this.assertServiceContracts();
+
     if (!this.bot) {
       this.logger.warn('TELEGRAM_BOT_TOKEN not set, bot will not start');
       return;
@@ -80,13 +84,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`Bot error: ${err.message}`, err.stack);
     });
 
-    this.logger.log('Starting Telegram bot polling');
-
-    this.bot.start({
-      onStart: () => {
-        this.logger.log('Telegram bot is now receiving updates');
-      },
-    });
+    this.startPolling();
 
     this.cleanupInterval = setInterval(() => {
       this.rateLimiter.cleanup();
@@ -94,6 +92,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.stopping = true;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
@@ -101,6 +100,34 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       this.bot.stop();
       this.logger.log('Telegram bot stopped');
     }
+  }
+
+  private startPolling(): void {
+    if (!this.bot) return;
+    this.logger.log('Starting Telegram bot polling');
+
+    this.bot.start({
+      drop_pending_updates: true,
+      onStart: () => {
+        this.logger.log('Telegram bot is now receiving updates');
+      },
+    }).catch((err) => {
+      if (this.stopping) return;
+
+      this.logger.error(
+        `Bot polling stopped: ${err.message}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+
+      // Auto-restart after transient errors (e.g., 409 conflict)
+      const delaySec = 5;
+      this.logger.log(`Restarting bot polling in ${delaySec}s...`);
+      setTimeout(() => {
+        if (!this.stopping) {
+          this.startPolling();
+        }
+      }, delaySec * 1000);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -183,6 +210,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     try {
       // Block agency agents from creating travel requests
+      this.logger.debug(`[debug] step=isActiveMember telegramId=${telegramId}`);
       if (await this.agenciesService.isActiveMember(telegramId)) {
         await this.telegramService.sendMessage(
           chatId,
@@ -192,11 +220,21 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       }
 
       const language = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
+      this.logger.debug(
+        `[debug] step=processMessage userId=${ctx.dbUser.id} lang=${language} textLen=${text.length}`,
+      );
+
       const response = await this.aiEngine.processMessage(ctx.dbUser.id, text);
 
       this.logger.log(
         `[ai-response] conversationId=${response.conversationId}, ` +
           `state=${response.state}, actions=${response.suggestedActions.length}`,
+      );
+
+      this.logger.debug(
+        `[debug] step=sendResponse chatId=${chatId} ` +
+          `hasActions=${response.suggestedActions.length > 0} ` +
+          `textLen=${response.textResponse.length}`,
       );
 
       if (response.suggestedActions.length > 0) {
@@ -208,9 +246,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       } else {
         await this.telegramService.sendMessage(chatId, response.textResponse);
       }
+      this.logger.debug(`[debug] step=done chatId=${chatId}`);
     } catch (error) {
       this.logger.error(
-        `[message] Error for telegramId=${telegramId}: ${error}`,
+        `[message] EXCEPTION for telegramId=${telegramId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
       const lang = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
@@ -727,5 +766,30 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     } catch {
       this.logger.error(`Failed to send error message to chat ${chatId}`);
     }
+  }
+
+  /**
+   * Runtime guard against stale dist/ builds.
+   * Asserts that injected services expose the methods TelegramUpdate relies on.
+   * If a method was renamed in source but dist/ still has the old compiled JS,
+   * this will catch the mismatch at startup instead of at first user request.
+   */
+  private assertServiceContracts(): void {
+    const checks: [string, unknown][] = [
+      ['agenciesService.isActiveMember', this.agenciesService?.isActiveMember],
+      ['aiEngine.processMessage', this.aiEngine?.processMessage],
+      ['offerWizard.hasActiveWizard', this.offerWizard?.hasActiveWizard],
+      ['agencyMgmt.buildDashboard', this.agencyMgmt?.buildDashboard],
+    ];
+
+    for (const [name, method] of checks) {
+      if (typeof method !== 'function') {
+        const msg = `[FATAL] Service contract broken: ${name} is not a function. Likely stale dist/ — run "npm run clean && npm run build"`;
+        this.logger.error(msg);
+        throw new Error(msg);
+      }
+    }
+
+    this.logger.log('Service contract checks passed');
   }
 }

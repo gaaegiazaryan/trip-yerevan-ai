@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import { Agency, AgencyStatus, AgencyMembershipStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class AgenciesService {
+  private readonly logger = new Logger(AgenciesService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async findById(id: string): Promise<Agency | null> {
@@ -46,12 +48,20 @@ export class AgenciesService {
   }
 
   async isActiveMember(telegramId: bigint): Promise<boolean> {
-    const membership = await this.prisma.agencyMembership.findFirst({
-      where: {
-        user: { telegramId },
-        status: AgencyMembershipStatus.ACTIVE,
-      },
-    });
-    return !!membership;
+    try {
+      const membership = await this.prisma.agencyMembership.findFirst({
+        where: {
+          user: { telegramId },
+          status: AgencyMembershipStatus.ACTIVE,
+        },
+      });
+      return !!membership;
+    } catch (error) {
+      this.logger.error(
+        `[isActiveMember] Failed for telegramId=${telegramId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      return false;
+    }
   }
 }
