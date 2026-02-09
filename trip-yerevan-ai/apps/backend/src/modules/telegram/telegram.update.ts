@@ -14,6 +14,7 @@ import { OfferWizardService } from '../offers/offer-wizard.service';
 import { isOfferSubmitResult } from '../offers/offer-wizard.types';
 import { AgencyApplicationService } from '../agencies/agency-application.service';
 import { AgenciesService } from '../agencies/agencies.service';
+import { AgencyManagementService } from '../agencies/agency-management.service';
 import {
   getTelegramMessage,
   prismaLanguageToSupported,
@@ -36,6 +37,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly offerWizard: OfferWizardService,
     private readonly agencyApp: AgencyApplicationService,
     private readonly agenciesService: AgenciesService,
+    private readonly agencyMgmt: AgencyManagementService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -48,6 +50,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
     this.bot.command('start', (ctx) => this.handleStart(ctx));
     this.bot.command('agency', (ctx) => this.handleAgencyCommand(ctx));
+    this.bot.command('set_agency_chat', (ctx) =>
+      this.handleSetAgencyChatCommand(ctx),
+    );
+    this.bot.command('add_manager', (ctx) =>
+      this.handleAddManagerCommand(ctx),
+    );
     this.bot.command('review_agencies', (ctx) =>
       this.handleReviewCommand(ctx),
     );
@@ -57,6 +65,9 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     );
     this.bot.callbackQuery(/^(rfq:|offer:)/, (ctx) =>
       this.handleOfferCallback(ctx),
+    );
+    this.bot.callbackQuery(/^mgmt:/, (ctx) =>
+      this.handleManagementCallback(ctx),
     );
     this.bot.callbackQuery(/^(agency:|review:)/, (ctx) =>
       this.handleAgencyCallback(ctx),
@@ -135,6 +146,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     const from = ctx.from;
     const text = ctx.message?.text;
     if (!chatId || !from || !text) return;
+
+    // Route to add-manager flow if active
+    if (this.agencyMgmt.hasActiveAddManager(chatId)) {
+      await this.handleAddManagerText(ctx, chatId);
+      return;
+    }
 
     // Route to agency wizard / rejection reason if active
     if (this.agencyApp.hasActiveWizard(chatId) || this.agencyApp.hasPendingRejectReason(chatId)) {
@@ -388,11 +405,71 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[/agency] telegramId=${telegramId}, chatId=${chatId}`);
 
     try {
+      // Show dashboard for existing agency agents (OWNER or MANAGER)
+      const dashboard = await this.agencyMgmt.buildDashboard(telegramId);
+      if (dashboard) {
+        await this.sendWizardResponse(chatId, dashboard);
+        return;
+      }
+
+      // Fall through to application wizard for non-agents
       const result = await this.agencyApp.startOrResume(chatId, telegramId);
       await this.sendWizardResponse(chatId, result);
     } catch (error) {
       this.logger.error(
         `[/agency] Error for telegramId=${telegramId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleSetAgencyChatCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    const from = ctx.from;
+    if (!chatId || !from) return;
+
+    const telegramId = BigInt(from.id);
+    this.logger.log(
+      `[/set_agency_chat] telegramId=${telegramId}, chatId=${chatId}`,
+    );
+
+    try {
+      const result = await this.agencyMgmt.setAgencyChat(
+        telegramId,
+        chatId,
+        ctx.chat?.title,
+      );
+      await this.telegramService.sendMessage(chatId, result.text);
+    } catch (error) {
+      this.logger.error(
+        `[/set_agency_chat] Error: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleAddManagerCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    const from = ctx.from;
+    if (!chatId || !from) return;
+
+    const telegramId = BigInt(from.id);
+    this.logger.log(
+      `[/add_manager] telegramId=${telegramId}, chatId=${chatId}`,
+    );
+
+    try {
+      const result = await this.agencyMgmt.startAddManager(chatId, telegramId);
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[/add_manager] Error: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
       await this.telegramService
@@ -564,6 +641,112 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error(
         `[agency-wizard-text] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agency management handlers
+  // ---------------------------------------------------------------------------
+
+  private async handleAddManagerText(
+    ctx: Context,
+    chatId: number,
+  ): Promise<void> {
+    try {
+      let targetTelegramId: bigint | null = null;
+
+      // Check for forwarded message
+      const forwardOrigin = (ctx.message as any)?.forward_origin;
+      if (forwardOrigin?.type === 'user') {
+        targetTelegramId = BigInt(forwardOrigin.sender_user.id);
+      } else if (forwardOrigin?.type === 'hidden_user') {
+        this.agencyMgmt.cancelAddManager(chatId);
+        await this.telegramService.sendMessage(
+          chatId,
+          'Cannot identify this user — their privacy settings hide their identity. ' +
+            'Ask them to /start the bot and send you their Telegram ID.',
+        );
+        return;
+      }
+
+      // Fallback: parse text as numeric Telegram ID
+      if (!targetTelegramId) {
+        const text = ctx.message?.text?.trim();
+        if (text && /^\d+$/.test(text)) {
+          targetTelegramId = BigInt(text);
+        }
+      }
+
+      if (!targetTelegramId) {
+        await this.telegramService.sendMessage(
+          chatId,
+          'Could not identify the user. Please forward a message from them or enter their numeric Telegram ID.',
+        );
+        return;
+      }
+
+      const result = await this.agencyMgmt.handleAddManagerInput(
+        chatId,
+        targetTelegramId,
+      );
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[add-manager-text] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      this.agencyMgmt.cancelAddManager(chatId);
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  private async handleManagementCallback(ctx: Context): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const from = ctx.from;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !from || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    const telegramId = BigInt(from.id);
+    this.logger.log(`[mgmt-callback] chatId=${chatId}, data=${data}`);
+
+    try {
+      if (data === 'mgmt:cancel_add') {
+        this.agencyMgmt.cancelAddManager(chatId);
+        await this.telegramService.sendMessage(
+          chatId,
+          'Add manager cancelled.',
+        );
+        return;
+      }
+
+      if (data === 'mgmt:set_chat_info') {
+        await this.telegramService.sendMessage(
+          chatId,
+          'To set the agency group chat, add the bot to your group and run /set\\_agency\\_chat there.',
+        );
+        return;
+      }
+
+      if (data === 'mgmt:add_manager') {
+        const result = await this.agencyMgmt.startAddManager(
+          chatId,
+          telegramId,
+        );
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+    } catch (error) {
+      this.logger.error(
+        `[mgmt-callback] Error chatId=${chatId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
       await this.telegramService

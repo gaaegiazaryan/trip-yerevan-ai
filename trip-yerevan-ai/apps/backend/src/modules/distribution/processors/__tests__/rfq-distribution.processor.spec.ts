@@ -4,6 +4,7 @@ import { RfqDistributionService } from '../../services/rfq-distribution.service'
 import { RfqNotificationBuilder } from '../../services/rfq-notification.builder';
 import { TelegramService } from '../../../telegram/telegram.service';
 import { PrismaService } from '../../../../infra/prisma/prisma.service';
+import { AgencyManagementService } from '../../../agencies/agency-management.service';
 import { RfqJobPayload, RfqNotificationPayload } from '../../types';
 
 function createMockNotification(
@@ -50,7 +51,12 @@ describe('RfqDistributionProcessor', () => {
   let distribution: jest.Mocked<RfqDistributionService>;
   let telegram: jest.Mocked<TelegramService>;
   let notificationBuilder: jest.Mocked<RfqNotificationBuilder>;
-  let prisma: { rfqDistribution: { findUnique: jest.Mock }; travelRequest: { findUnique: jest.Mock } };
+  let agencyMgmt: jest.Mocked<Pick<AgencyManagementService, 'findActiveAgentTelegramIds'>>;
+  let prisma: {
+    rfqDistribution: { findUnique: jest.Mock };
+    travelRequest: { findUnique: jest.Mock };
+    agency: { findUnique: jest.Mock };
+  };
 
   beforeEach(() => {
     distribution = {
@@ -66,6 +72,10 @@ describe('RfqDistributionProcessor', () => {
       buildTelegramMessage: jest.fn().mockReturnValue('*New Travel Request*\n...'),
     } as unknown as jest.Mocked<RfqNotificationBuilder>;
 
+    agencyMgmt = {
+      findActiveAgentTelegramIds: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<Pick<AgencyManagementService, 'findActiveAgentTelegramIds'>>;
+
     prisma = {
       rfqDistribution: {
         findUnique: jest.fn().mockResolvedValue({ deliveryStatus: 'PENDING' }),
@@ -75,6 +85,9 @@ describe('RfqDistributionProcessor', () => {
           expiresAt: new Date('2026-03-29'),
         }),
       },
+      agency: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
     };
 
     processor = new RfqDistributionProcessor(
@@ -82,6 +95,7 @@ describe('RfqDistributionProcessor', () => {
       telegram,
       notificationBuilder,
       prisma as unknown as PrismaService,
+      agencyMgmt as unknown as AgencyManagementService,
     );
   });
 
@@ -111,8 +125,11 @@ describe('RfqDistributionProcessor', () => {
     expect(distribution.markFailed).not.toHaveBeenCalled();
   });
 
-  it('should mark FAILED when agency has no telegramChatId', async () => {
+  it('should mark FAILED when no delivery targets exist', async () => {
     const job = createMockJob({ agencyTelegramChatId: null });
+    // No shared chat, no active agents — 0 targets
+    prisma.agency.findUnique.mockResolvedValue(null);
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([]);
 
     await processor.process(job);
 
@@ -122,7 +139,7 @@ describe('RfqDistributionProcessor', () => {
     // Should mark as failed with descriptive reason
     expect(distribution.markFailed).toHaveBeenCalledWith(
       'dist-001',
-      expect.stringContaining('no Telegram chat ID'),
+      expect.stringContaining('no reachable delivery targets'),
     );
     expect(distribution.markDelivered).not.toHaveBeenCalled();
   });
@@ -198,6 +215,103 @@ describe('RfqDistributionProcessor', () => {
       null,
     );
     expect(telegram.sendRfqToAgency).toHaveBeenCalled();
+    expect(distribution.markDelivered).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Dual delivery tests
+  // ---------------------------------------------------------------------------
+
+  it('should deliver to shared chat + agent private chats (deduplicated)', async () => {
+    const ownerChatId = '100';
+    const sharedChatId = BigInt(-200);
+    const agentChatId1 = BigInt(300);
+    const agentChatId2 = BigInt(100); // same as owner — should be deduplicated
+
+    const job = createMockJob({ agencyTelegramChatId: ownerChatId });
+    prisma.agency.findUnique.mockResolvedValue({
+      agencyTelegramChatId: sharedChatId,
+    });
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([
+      agentChatId1,
+      agentChatId2,
+    ]);
+
+    await processor.process(job);
+
+    // Owner(100), shared(-200), agent(300) — agent(100) deduplicated with owner
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledTimes(3);
+    expect(distribution.markDelivered).toHaveBeenCalledWith('dist-001');
+  });
+
+  it('should succeed if at least one target succeeds', async () => {
+    const job = createMockJob({ agencyTelegramChatId: '100' });
+    prisma.agency.findUnique.mockResolvedValue({
+      agencyTelegramChatId: BigInt(-200),
+    });
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([]);
+
+    // First call fails, second succeeds
+    telegram.sendRfqToAgency
+      .mockRejectedValueOnce(new Error('Chat not found'))
+      .mockResolvedValueOnce(undefined);
+
+    await processor.process(job);
+
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledTimes(2);
+    expect(distribution.markDelivered).toHaveBeenCalledWith('dist-001');
+    expect(distribution.markFailed).not.toHaveBeenCalled();
+  });
+
+  it('should mark FAILED only if ALL targets fail', async () => {
+    const job = createMockJob({ agencyTelegramChatId: '100' });
+    prisma.agency.findUnique.mockResolvedValue({
+      agencyTelegramChatId: BigInt(-200),
+    });
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([]);
+
+    telegram.sendRfqToAgency.mockRejectedValue(new Error('Chat not found'));
+
+    await processor.process(job);
+
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledTimes(2);
+    expect(distribution.markFailed).toHaveBeenCalledWith(
+      'dist-001',
+      'Chat not found',
+    );
+    expect(distribution.markDelivered).not.toHaveBeenCalled();
+  });
+
+  it('should deduplicate when owner chat equals shared chat', async () => {
+    const job = createMockJob({ agencyTelegramChatId: '100' });
+    prisma.agency.findUnique.mockResolvedValue({
+      agencyTelegramChatId: BigInt(100), // same as payload
+    });
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([BigInt(100)]); // also same
+
+    await processor.process(job);
+
+    // All three resolve to 100 — should send only once
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledTimes(1);
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledWith(
+      100,
+      expect.any(String),
+      expect.any(Array),
+    );
+    expect(distribution.markDelivered).toHaveBeenCalled();
+  });
+
+  it('should handle missing agencyTelegramChatId (shared chat not set)', async () => {
+    const job = createMockJob({ agencyTelegramChatId: '100' });
+    prisma.agency.findUnique.mockResolvedValue({
+      agencyTelegramChatId: null, // not set
+    });
+    agencyMgmt.findActiveAgentTelegramIds.mockResolvedValue([BigInt(200)]);
+
+    await processor.process(job);
+
+    // Owner(100) + agent(200) = 2 targets
+    expect(telegram.sendRfqToAgency).toHaveBeenCalledTimes(2);
     expect(distribution.markDelivered).toHaveBeenCalled();
   });
 });

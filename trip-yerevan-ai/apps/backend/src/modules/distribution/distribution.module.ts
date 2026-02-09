@@ -8,6 +8,7 @@ import {
 import { RfqDistributionProcessor } from './processors/rfq-distribution.processor';
 import { RFQ_DISTRIBUTION_QUEUE } from './types';
 import { TelegramModule } from '../telegram/telegram.module';
+import { AgenciesModule } from '../agencies/agencies.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { TelegramModule } from '../telegram/telegram.module';
       name: RFQ_DISTRIBUTION_QUEUE,
     }),
     forwardRef(() => TelegramModule),
+    AgenciesModule,
   ],
   providers: [
     AgencyMatchingService,

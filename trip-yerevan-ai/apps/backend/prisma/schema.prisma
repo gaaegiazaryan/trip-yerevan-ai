@@ -186,8 +186,9 @@ model Agency {
   description     String?
   contactEmail     String?
   contactPhone     String
-  telegramChatId   BigInt?
-  status           AgencyStatus @default(PENDING)
+  telegramChatId       BigInt?
+  agencyTelegramChatId BigInt?
+  status               AgencyStatus @default(PENDING)
   specializations  String[]     @default([])
   regions          String[]     @default([])
   rating           Decimal      @default(0) @db.Decimal(3, 2)

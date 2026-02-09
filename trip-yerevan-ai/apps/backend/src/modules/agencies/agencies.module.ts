@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common';
 import { AgenciesService } from './agencies.service';
 import { AgenciesController } from './agencies.controller';
 import { AgencyApplicationService } from './agency-application.service';
+import { AgencyManagementService } from './agency-management.service';
 
 @Module({
   controllers: [AgenciesController],
-  providers: [AgenciesService, AgencyApplicationService],
-  exports: [AgenciesService, AgencyApplicationService],
+  providers: [AgenciesService, AgencyApplicationService, AgencyManagementService],
+  exports: [AgenciesService, AgencyApplicationService, AgencyManagementService],
 })
 export class AgenciesModule {}

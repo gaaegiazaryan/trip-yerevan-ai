@@ -6,6 +6,7 @@ import { RfqDistributionService } from '../services/rfq-distribution.service';
 import { RfqNotificationBuilder } from '../services/rfq-notification.builder';
 import { TelegramService } from '../../telegram/telegram.service';
 import { PrismaService } from '../../../infra/prisma/prisma.service';
+import { AgencyManagementService } from '../../agencies/agency-management.service';
 
 @Processor(RFQ_DISTRIBUTION_QUEUE)
 export class RfqDistributionProcessor extends WorkerHost {
@@ -16,6 +17,7 @@ export class RfqDistributionProcessor extends WorkerHost {
     private readonly telegram: TelegramService,
     private readonly notificationBuilder: RfqNotificationBuilder,
     private readonly prisma: PrismaService,
+    private readonly agencyMgmt: AgencyManagementService,
   ) {
     super();
   }
@@ -23,14 +25,14 @@ export class RfqDistributionProcessor extends WorkerHost {
   /**
    * Processes a single agency RFQ delivery job.
    *
-   * 1. Validates agency has a Telegram chat ID
-   * 2. Loads TravelRequest for expiration date
-   * 3. Builds formatted Telegram message with inline actions
-   * 4. Sends via TelegramService
-   * 5. Updates distribution status
+   * Delivers to ALL targets for the agency (deduplicated):
+   *   1. Owner's private chat (from job payload)
+   *   2. Shared agency group chat (agencyTelegramChatId, if set)
+   *   3. All active agents' private chats
    *
    * Idempotent: if distribution is already DELIVERED, skips delivery.
    * Failures do NOT affect other agencies — each job is independent.
+   * Marked DELIVERED if at least one target succeeds.
    */
   async process(job: Job<RfqJobPayload>): Promise<void> {
     const {
@@ -55,14 +57,20 @@ export class RfqDistributionProcessor extends WorkerHost {
         return;
       }
 
-      // Validate chat ID
-      if (!agencyTelegramChatId) {
+      // Resolve all delivery targets (deduplicated)
+      const targets = await this.resolveDeliveryTargets(
+        agencyId,
+        agencyTelegramChatId,
+      );
+
+      if (targets.length === 0) {
         await this.distribution.markFailed(
           distributionId,
-          `Agency ${agencyId} has no Telegram chat ID — cannot deliver notification`,
+          `Agency ${agencyId} has no reachable delivery targets`,
         );
         this.logger.warn(
-          `Agency ${agencyId} has no telegramChatId — marked distribution ${distributionId} as FAILED`,
+          `Agency ${agencyId} has no delivery targets — ` +
+            `marked distribution ${distributionId} as FAILED`,
         );
         return;
       }
@@ -91,31 +99,70 @@ export class RfqDistributionProcessor extends WorkerHost {
         },
       ];
 
-      // Send via Telegram
-      await this.telegram.sendRfqToAgency(
-        Number(agencyTelegramChatId),
-        messageText,
-        actions,
+      // Send to all targets
+      const sendResults = await Promise.allSettled(
+        targets.map((targetChatId) =>
+          this.telegram.sendRfqToAgency(
+            Number(targetChatId),
+            messageText,
+            actions,
+          ),
+        ),
       );
 
-      // Mark as delivered
-      await this.distribution.markDelivered(distributionId);
+      // Log individual delivery results
+      for (let i = 0; i < targets.length; i++) {
+        const status = sendResults[i].status;
+        this.logger.log(
+          `[rfq-delivery] target=${targets[i]}, agencyId=${agencyId}, ` +
+            `result=${status}`,
+        );
+      }
 
-      this.logger.log(
-        `Delivered RFQ ${travelRequestId} to agency ${agencyId} ` +
-          `(chat=${agencyTelegramChatId})`,
-      );
+      const successCount = sendResults.filter(
+        (r) => r.status === 'fulfilled',
+      ).length;
+
+      if (successCount > 0) {
+        await this.distribution.markDelivered(distributionId);
+        this.logger.log(
+          `[rfq-delivery] RFQ ${travelRequestId} → agency ${agencyId}: ` +
+            `${successCount}/${targets.length} targets delivered`,
+        );
+      } else {
+        // All sends failed
+        const firstError = sendResults.find(
+          (r) => r.status === 'rejected',
+        ) as PromiseRejectedResult | undefined;
+        const reason =
+          firstError?.reason instanceof Error
+            ? firstError.reason.message
+            : 'All delivery targets failed';
+
+        await this.distribution.markFailed(distributionId, reason);
+
+        this.logger.error(
+          `[rfq-delivery] RFQ ${travelRequestId} → agency ${agencyId}: ` +
+            `all ${targets.length} targets failed — ${reason}`,
+        );
+
+        if (firstError?.reason && this.isTransientError(firstError.reason)) {
+          throw firstError.reason;
+        }
+      }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      // Only reaches here if rethrown for retry or unexpected error
+      if (!(await this.isAlreadyDelivered(distributionId))) {
+        const reason = error instanceof Error ? error.message : String(error);
+        await this.distribution
+          .markFailed(distributionId, reason)
+          .catch(() => {});
 
-      // Mark as failed
-      await this.distribution.markFailed(distributionId, reason);
+        this.logger.error(
+          `Failed to deliver RFQ ${travelRequestId} to agency ${agencyId}: ${reason}`,
+        );
+      }
 
-      this.logger.error(
-        `Failed to deliver RFQ ${travelRequestId} to agency ${agencyId}: ${reason}`,
-      );
-
-      // Rethrow for BullMQ retry on transient errors
       if (this.isTransientError(error)) {
         throw error;
       }
@@ -123,9 +170,53 @@ export class RfqDistributionProcessor extends WorkerHost {
   }
 
   /**
+   * Resolves all unique delivery targets for an agency.
+   * Collects: owner chat (payload), shared group chat, all active agents' chats.
+   * Deduplicates by bigint value.
+   */
+  private async resolveDeliveryTargets(
+    agencyId: string,
+    agencyTelegramChatIdFromPayload: string | null,
+  ): Promise<bigint[]> {
+    const targetSet = new Set<bigint>();
+
+    // 1. Owner's chat from job payload (legacy path)
+    if (agencyTelegramChatIdFromPayload) {
+      targetSet.add(BigInt(agencyTelegramChatIdFromPayload));
+    }
+
+    // 2. Shared agency group chat (new field)
+    const agency = await this.prisma.agency.findUnique({
+      where: { id: agencyId },
+      select: { agencyTelegramChatId: true },
+    });
+    if (agency?.agencyTelegramChatId) {
+      targetSet.add(agency.agencyTelegramChatId);
+      this.logger.debug(
+        `[rfq-delivery] agencyChatDelivered agencyId=${agencyId}, ` +
+          `sharedChat=${agency.agencyTelegramChatId}`,
+      );
+    }
+
+    // 3. All active agents' private chats
+    const agentTelegramIds =
+      await this.agencyMgmt.findActiveAgentTelegramIds(agencyId);
+    for (const tid of agentTelegramIds) {
+      targetSet.add(tid);
+    }
+
+    if (agentTelegramIds.length > 0) {
+      this.logger.debug(
+        `[rfq-delivery] managerDelivered agencyId=${agencyId}, ` +
+          `agents=${agentTelegramIds.length}`,
+      );
+    }
+
+    return Array.from(targetSet);
+  }
+
+  /**
    * Checks if this distribution has already been delivered (idempotency).
-   * Prevents duplicate sends on job retry after status update succeeded
-   * but before the job was acknowledged.
    */
   private async isAlreadyDelivered(distributionId: string): Promise<boolean> {
     const record = await this.prisma.rfqDistribution.findUnique({
@@ -138,7 +229,6 @@ export class RfqDistributionProcessor extends WorkerHost {
   private isTransientError(error: unknown): boolean {
     if (error instanceof Error) {
       const message = error.message;
-      // Network/timeout errors are retryable
       if (
         ['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND'].some(
           (code) => message.includes(code),
@@ -146,7 +236,6 @@ export class RfqDistributionProcessor extends WorkerHost {
       ) {
         return true;
       }
-      // Telegram API 429 (rate limit) and 5xx are retryable
       if (message.includes('429') || message.includes('Too Many Requests')) {
         return true;
       }
