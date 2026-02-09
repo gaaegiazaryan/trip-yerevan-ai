@@ -33,7 +33,7 @@ describe('AgencyApplicationService', () => {
   let prisma: ReturnType<typeof createMockPrisma>;
 
   const CHAT_ID = 123456789;
-  const TELEGRAM_ID = BigInt(111222333);
+  const USER_ID = 'user-applicant-001';
 
   beforeEach(() => {
     prisma = createMockPrisma();
@@ -53,7 +53,7 @@ describe('AgencyApplicationService', () => {
         status: AgencyStatus.APPROVED,
       });
 
-      const result = await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      const result = await service.startOrResume(CHAT_ID, USER_ID);
       expect(result.text).toContain('approved');
       expect(result.text).toContain('Test Agency');
       expect(service.hasActiveWizard(CHAT_ID)).toBe(false);
@@ -66,7 +66,7 @@ describe('AgencyApplicationService', () => {
         status: AgencyApplicationStatus.SUBMITTED,
       });
 
-      const result = await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      const result = await service.startOrResume(CHAT_ID, USER_ID);
       expect(result.text).toContain('under review');
       expect(service.hasActiveWizard(CHAT_ID)).toBe(false);
     });
@@ -75,7 +75,7 @@ describe('AgencyApplicationService', () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
 
-      const result = await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      const result = await service.startOrResume(CHAT_ID, USER_ID);
       expect(result.text).toContain('Agency Registration');
       expect(result.text).toContain('agency name');
       expect(service.hasActiveWizard(CHAT_ID)).toBe(true);
@@ -86,10 +86,10 @@ describe('AgencyApplicationService', () => {
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
 
       // Start wizard first
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
 
       // Resume should return the same step
-      const result = await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      const result = await service.startOrResume(CHAT_ID, USER_ID);
       expect(result.text).toContain('agency name');
     });
   });
@@ -102,7 +102,7 @@ describe('AgencyApplicationService', () => {
     beforeEach(async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
     });
 
     it('should accept a valid name and advance to phone step', async () => {
@@ -130,7 +130,7 @@ describe('AgencyApplicationService', () => {
     beforeEach(async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
       await service.handleTextInput(CHAT_ID, 'Test Agency');
     });
 
@@ -160,7 +160,7 @@ describe('AgencyApplicationService', () => {
     beforeEach(async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
       await service.handleTextInput(CHAT_ID, 'Test Agency');
       await service.handleTextInput(CHAT_ID, '+37491123456');
     });
@@ -209,7 +209,7 @@ describe('AgencyApplicationService', () => {
     beforeEach(async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
       await service.handleTextInput(CHAT_ID, 'Test Agency');
       await service.handleTextInput(CHAT_ID, '+37491123456');
       await service.handleCallback(CHAT_ID, 'agency:spec:done');
@@ -243,7 +243,7 @@ describe('AgencyApplicationService', () => {
     beforeEach(async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
       await service.handleTextInput(CHAT_ID, 'Test Agency');
       await service.handleTextInput(CHAT_ID, '+37491123456');
       await service.handleCallback(CHAT_ID, 'agency:spec:PACKAGE');
@@ -260,7 +260,7 @@ describe('AgencyApplicationService', () => {
       expect(result.text).toContain('submitted successfully');
       expect(prisma.agencyApplication.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          applicantTelegramId: TELEGRAM_ID,
+          applicantUserId: USER_ID,
           status: AgencyApplicationStatus.SUBMITTED,
           draftData: expect.objectContaining({
             name: 'Test Agency',
@@ -299,7 +299,7 @@ describe('AgencyApplicationService', () => {
     it('should cancel active wizard', async () => {
       prisma.agency.findFirst.mockResolvedValue(null);
       prisma.agencyApplication.findFirst.mockResolvedValue(null);
-      await service.startOrResume(CHAT_ID, TELEGRAM_ID);
+      await service.startOrResume(CHAT_ID, USER_ID);
       expect(service.hasActiveWizard(CHAT_ID)).toBe(true);
 
       const result = await service.handleCallback(CHAT_ID, 'agency:cancel');
@@ -332,7 +332,7 @@ describe('AgencyApplicationService', () => {
     it('should create agency and update application in transaction', async () => {
       const appData = {
         id: 'app-001',
-        applicantTelegramId: TELEGRAM_ID,
+        applicantUserId: USER_ID,
         draftData: {
           name: 'New Agency',
           phone: '+37491000000',
@@ -346,7 +346,7 @@ describe('AgencyApplicationService', () => {
 
       const mockTx = {
         agency: { create: jest.fn().mockResolvedValue({ id: 'agency-new' }) },
-        user: { findFirst: jest.fn().mockResolvedValue({ id: 'user-001' }) },
+        user: { findUnique: jest.fn().mockResolvedValue({ id: USER_ID, telegramId: BigInt(111222333) }) },
         agencyAgent: { create: jest.fn().mockResolvedValue({}) },
         agencyApplication: { update: jest.fn().mockResolvedValue({}) },
       };
@@ -356,7 +356,7 @@ describe('AgencyApplicationService', () => {
       const result = await service.approveApplication('app-001', 'reviewer-001');
 
       expect(result.agencyId).toBe('agency-new');
-      expect(result.applicantTelegramId).toBe(TELEGRAM_ID);
+      expect(result.applicantTelegramId).toBe(BigInt(111222333));
       expect(mockTx.agency.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           name: 'New Agency',
@@ -376,7 +376,7 @@ describe('AgencyApplicationService', () => {
   describe('rejectApplication', () => {
     it('should update application with rejection reason', async () => {
       prisma.agencyApplication.update.mockResolvedValue({
-        applicantTelegramId: TELEGRAM_ID,
+        applicantUserId: USER_ID,
       });
 
       const result = await service.rejectApplication(
@@ -385,7 +385,7 @@ describe('AgencyApplicationService', () => {
         'Incomplete info',
       );
 
-      expect(result.applicantTelegramId).toBe(TELEGRAM_ID);
+      expect(result.applicantUserId).toBe(USER_ID);
       expect(prisma.agencyApplication.update).toHaveBeenCalledWith({
         where: { id: 'app-001' },
         data: expect.objectContaining({
@@ -400,7 +400,7 @@ describe('AgencyApplicationService', () => {
   describe('rejection reason flow', () => {
     it('should collect reason text and reject application', async () => {
       prisma.agencyApplication.update.mockResolvedValue({
-        applicantTelegramId: TELEGRAM_ID,
+        applicantUserId: USER_ID,
       });
 
       // Set pending reason

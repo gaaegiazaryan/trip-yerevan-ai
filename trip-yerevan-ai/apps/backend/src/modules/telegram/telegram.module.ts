@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Bot } from 'grammy';
+import { BotContext } from './telegram-context';
 import { TelegramService } from './telegram.service';
 import { TelegramUpdate } from './telegram.update';
 import { TelegramRateLimiter } from './telegram-rate-limiter';
+import { TelegramUserMiddleware } from './telegram-user.middleware';
 import { TELEGRAM_BOT, TelegramBot } from './telegram-bot.provider';
 import { UsersModule } from '../users/users.module';
 import { AiModule } from '../ai/ai.module';
@@ -20,11 +22,12 @@ import { AgenciesModule } from '../agencies/agencies.module';
         if (!token) {
           return null;
         }
-        return new Bot(token);
+        return new Bot<BotContext>(token);
       },
       inject: [ConfigService],
     },
     TelegramRateLimiter,
+    TelegramUserMiddleware,
     TelegramService,
     TelegramUpdate,
   ],

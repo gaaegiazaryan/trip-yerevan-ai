@@ -8,7 +8,7 @@ export enum AgencyWizardStep {
 
 export interface AgencyWizardState {
   step: AgencyWizardStep;
-  telegramId: bigint;
+  userId: string;
   name?: string;
   phone?: string;
   specializations: string[];

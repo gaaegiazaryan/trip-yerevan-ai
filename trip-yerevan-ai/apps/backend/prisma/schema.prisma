@@ -170,6 +170,7 @@ model User {
   proxyChats           ProxyChat[]
   aiConversations      AIConversation[]
   bookingHistory       BookingStatusHistory[]
+  applications         AgencyApplication[] @relation("ApplicationApplicant")
   reviewedApplications AgencyApplication[] @relation("ApplicationReviewer")
   verifiedAgencies     Agency[]            @relation("AgencyVerifier")
 
@@ -512,19 +513,20 @@ enum AgencyApplicationStatus {
 }
 
 model AgencyApplication {
-  id                  String                  @id @default(uuid()) @db.Uuid
-  applicantTelegramId BigInt
-  draftData           Json
-  status              AgencyApplicationStatus @default(SUBMITTED)
-  reviewerUserId      String?                 @db.Uuid
-  decisionReason      String?
-  createdAt           DateTime                @default(now())
-  decidedAt           DateTime?
+  id              String                  @id @default(uuid()) @db.Uuid
+  applicantUserId String                  @db.Uuid
+  draftData       Json
+  status          AgencyApplicationStatus @default(SUBMITTED)
+  reviewerUserId  String?                 @db.Uuid
+  decisionReason  String?
+  createdAt       DateTime                @default(now())
+  decidedAt       DateTime?
 
   // Relations
-  reviewer User? @relation("ApplicationReviewer", fields: [reviewerUserId], references: [id])
+  applicant User  @relation("ApplicationApplicant", fields: [applicantUserId], references: [id])
+  reviewer  User? @relation("ApplicationReviewer", fields: [reviewerUserId], references: [id])
 
-  @@index([applicantTelegramId])
+  @@index([applicantUserId])
   @@index([status])
   @@map("agency_applications")
 }

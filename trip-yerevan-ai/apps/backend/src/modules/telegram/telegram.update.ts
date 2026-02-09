@@ -6,10 +6,10 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { TELEGRAM_BOT, TelegramBot } from './telegram-bot.provider';
-import { UsersService, TelegramUserData } from '../users/users.service';
 import { AiEngineService } from '../ai/services/ai-engine.service';
 import { TelegramService } from './telegram.service';
 import { TelegramRateLimiter } from './telegram-rate-limiter';
+import { TelegramUserMiddleware } from './telegram-user.middleware';
 import { OfferWizardService } from '../offers/offer-wizard.service';
 import { isOfferSubmitResult } from '../offers/offer-wizard.types';
 import { AgencyApplicationService } from '../agencies/agency-application.service';
@@ -21,7 +21,7 @@ import {
 } from './telegram-messages';
 import { SupportedLanguage } from '../ai/types';
 import { UserRole } from '@prisma/client';
-import type { Context } from 'grammy';
+import { BotContext } from './telegram-context';
 
 @Injectable()
 export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
@@ -30,10 +30,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(TELEGRAM_BOT) private readonly bot: TelegramBot,
-    private readonly usersService: UsersService,
     private readonly aiEngine: AiEngineService,
     private readonly telegramService: TelegramService,
     private readonly rateLimiter: TelegramRateLimiter,
+    private readonly userMiddleware: TelegramUserMiddleware,
     private readonly offerWizard: OfferWizardService,
     private readonly agencyApp: AgencyApplicationService,
     private readonly agenciesService: AgenciesService,
@@ -47,6 +47,9 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log('Registering Telegram bot handlers');
+
+    // Global middleware: resolve database user for every update
+    this.bot.use(this.userMiddleware.middleware());
 
     this.bot.command('start', (ctx) => this.handleStart(ctx));
     this.bot.command('agency', (ctx) => this.handleAgencyCommand(ctx));
@@ -103,26 +106,16 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------------------
   // /start
   // ---------------------------------------------------------------------------
-  private async handleStart(ctx: Context): Promise<void> {
+  private async handleStart(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
-    if (!chatId || !from) return;
+    if (!chatId || !ctx.dbUser) return;
 
-    const telegramId = BigInt(from.id);
-    this.logger.log(`[/start] telegramId=${telegramId}, chatId=${chatId}`);
+    this.logger.log(`[/start] telegramId=${ctx.dbUser.telegramId}, chatId=${chatId}`);
 
     try {
-      const userData: TelegramUserData = {
-        telegramId,
-        firstName: from.first_name,
-        lastName: from.last_name,
-        languageCode: from.language_code,
-      };
+      const language = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
 
-      const user = await this.usersService.findOrCreateByTelegram(userData);
-      const language = prismaLanguageToSupported(user.preferredLanguage);
-
-      const isNew = user.createdAt.getTime() > Date.now() - 5000;
+      const isNew = ctx.dbUser.createdAt.getTime() > Date.now() - 5000;
       const messageKey = isNew ? 'welcome' : 'welcome_returning';
 
       await this.telegramService.sendMessage(
@@ -131,7 +124,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       );
     } catch (error) {
       this.logger.error(
-        `[/start] Error for telegramId=${telegramId}: ${error}`,
+        `[/start] Error for telegramId=${ctx.dbUser.telegramId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
       await this.safeReply(chatId, 'RU');
@@ -141,11 +134,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------------------
   // Text message
   // ---------------------------------------------------------------------------
-  private async handleTextMessage(ctx: Context): Promise<void> {
+  private async handleTextMessage(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
     const text = ctx.message?.text;
-    if (!chatId || !from || !text) return;
+    if (!chatId || !text) return;
 
     // Route to add-manager flow if active
     if (this.agencyMgmt.hasActiveAddManager(chatId)) {
@@ -165,16 +157,19 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const telegramId = BigInt(from.id);
+    if (!ctx.dbUser) {
+      await this.telegramService.sendMessage(
+        chatId,
+        getTelegramMessage('error_not_registered', 'RU'),
+      );
+      return;
+    }
+
+    const telegramId = ctx.dbUser.telegramId;
 
     if (this.rateLimiter.isRateLimited(telegramId)) {
       this.logger.debug(`[rate-limited] telegramId=${telegramId}`);
-      const user = await this.usersService
-        .findByTelegramId(telegramId)
-        .catch(() => null);
-      const lang = user
-        ? prismaLanguageToSupported(user.preferredLanguage)
-        : 'RU';
+      const lang = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
       await this.telegramService.sendMessage(
         chatId,
         getTelegramMessage('rate_limited', lang),
@@ -187,15 +182,6 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     );
 
     try {
-      const user = await this.usersService.findByTelegramId(telegramId);
-      if (!user) {
-        await this.telegramService.sendMessage(
-          chatId,
-          getTelegramMessage('error_not_registered', 'RU'),
-        );
-        return;
-      }
-
       // Block agency agents from creating travel requests
       if (await this.agenciesService.isActiveAgent(telegramId)) {
         await this.telegramService.sendMessage(
@@ -205,8 +191,8 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const language = prismaLanguageToSupported(user.preferredLanguage);
-      const response = await this.aiEngine.processMessage(user.id, text);
+      const language = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
+      const response = await this.aiEngine.processMessage(ctx.dbUser.id, text);
 
       this.logger.log(
         `[ai-response] conversationId=${response.conversationId}, ` +
@@ -227,12 +213,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
         `[message] Error for telegramId=${telegramId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
-      const user = await this.usersService
-        .findByTelegramId(telegramId)
-        .catch(() => null);
-      const lang = user
-        ? prismaLanguageToSupported(user.preferredLanguage)
-        : 'RU';
+      const lang = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
       await this.safeReply(chatId, lang);
     }
   }
@@ -240,31 +221,27 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------------------
   // Callback query (inline keyboard buttons)
   // ---------------------------------------------------------------------------
-  private async handleCallbackQuery(ctx: Context): Promise<void> {
+  private async handleCallbackQuery(ctx: BotContext): Promise<void> {
     const chatId = ctx.callbackQuery?.message?.chat.id;
-    const from = ctx.from;
     const data = ctx.callbackQuery?.data;
-    if (!chatId || !from || !data) return;
-
-    const telegramId = BigInt(from.id);
+    if (!chatId || !data) return;
 
     await ctx.answerCallbackQuery().catch(() => {});
 
-    this.logger.log(`[callback] telegramId=${telegramId}, data=${data}`);
+    if (!ctx.dbUser) {
+      await this.telegramService.sendMessage(
+        chatId,
+        getTelegramMessage('error_not_registered', 'RU'),
+      );
+      return;
+    }
+
+    this.logger.log(`[callback] telegramId=${ctx.dbUser.telegramId}, data=${data}`);
 
     try {
-      const user = await this.usersService.findByTelegramId(telegramId);
-      if (!user) {
-        await this.telegramService.sendMessage(
-          chatId,
-          getTelegramMessage('error_not_registered', 'RU'),
-        );
-        return;
-      }
-
       const syntheticMessage = this.mapCallbackToMessage(data);
       const response = await this.aiEngine.processMessage(
-        user.id,
+        ctx.dbUser.id,
         syntheticMessage,
       );
 
@@ -284,15 +261,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.error(
-        `[callback] Error for telegramId=${telegramId}: ${error}`,
+        `[callback] Error for telegramId=${ctx.dbUser.telegramId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
-      const user = await this.usersService
-        .findByTelegramId(telegramId)
-        .catch(() => null);
-      const lang = user
-        ? prismaLanguageToSupported(user.preferredLanguage)
-        : 'RU';
+      const lang = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
       await this.safeReply(chatId, lang);
     }
   }
@@ -301,11 +273,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // Offer wizard handlers
   // ---------------------------------------------------------------------------
 
-  private async handleOfferCallback(ctx: Context): Promise<void> {
+  private async handleOfferCallback(ctx: BotContext): Promise<void> {
     const chatId = ctx.callbackQuery?.message?.chat.id;
-    const from = ctx.from;
     const data = ctx.callbackQuery?.data;
-    if (!chatId || !from || !data) return;
+    if (!chatId || !data) return;
 
     await ctx.answerCallbackQuery().catch(() => {});
 
@@ -315,11 +286,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       // rfq:offer:<travelRequestId> → start wizard
       if (data.startsWith('rfq:offer:')) {
         const travelRequestId = data.replace('rfq:offer:', '');
-        const telegramId = BigInt(from.id);
+        if (!ctx.dbUser) return;
         const result = await this.offerWizard.startWizard(
           chatId,
           travelRequestId,
-          telegramId,
+          ctx.dbUser.telegramId,
         );
         await this.sendWizardResponse(chatId, result);
         return;
@@ -363,7 +334,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleOfferWizardText(
-    ctx: Context,
+    ctx: BotContext,
     chatId: number,
     text: string,
   ): Promise<void> {
@@ -396,12 +367,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // Agency onboarding handlers
   // ---------------------------------------------------------------------------
 
-  private async handleAgencyCommand(ctx: Context): Promise<void> {
+  private async handleAgencyCommand(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
-    if (!chatId || !from) return;
+    if (!chatId || !ctx.dbUser) return;
 
-    const telegramId = BigInt(from.id);
+    const telegramId = ctx.dbUser.telegramId;
     this.logger.log(`[/agency] telegramId=${telegramId}, chatId=${chatId}`);
 
     try {
@@ -413,7 +383,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       }
 
       // Fall through to application wizard for non-agents
-      const result = await this.agencyApp.startOrResume(chatId, telegramId);
+      const result = await this.agencyApp.startOrResume(chatId, ctx.dbUser.id);
       await this.sendWizardResponse(chatId, result);
     } catch (error) {
       this.logger.error(
@@ -426,12 +396,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleSetAgencyChatCommand(ctx: Context): Promise<void> {
+  private async handleSetAgencyChatCommand(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
-    if (!chatId || !from) return;
+    if (!chatId || !ctx.dbUser) return;
 
-    const telegramId = BigInt(from.id);
+    const telegramId = ctx.dbUser.telegramId;
     this.logger.log(
       `[/set_agency_chat] telegramId=${telegramId}, chatId=${chatId}`,
     );
@@ -454,12 +423,11 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleAddManagerCommand(ctx: Context): Promise<void> {
+  private async handleAddManagerCommand(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
-    if (!chatId || !from) return;
+    if (!chatId || !ctx.dbUser) return;
 
-    const telegramId = BigInt(from.id);
+    const telegramId = ctx.dbUser.telegramId;
     this.logger.log(
       `[/add_manager] telegramId=${telegramId}, chatId=${chatId}`,
     );
@@ -478,28 +446,17 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleReviewCommand(ctx: Context): Promise<void> {
+  private async handleReviewCommand(ctx: BotContext): Promise<void> {
     const chatId = ctx.chat?.id;
-    const from = ctx.from;
-    if (!chatId || !from) return;
+    if (!chatId || !ctx.dbUser) return;
 
-    const telegramId = BigInt(from.id);
+    const telegramId = ctx.dbUser.telegramId;
     this.logger.log(
       `[/review_agencies] telegramId=${telegramId}, chatId=${chatId}`,
     );
 
     try {
-      // Check user role
-      const user = await this.usersService.findByTelegramId(telegramId);
-      if (!user) {
-        await this.telegramService.sendMessage(
-          chatId,
-          'You are not registered.',
-        );
-        return;
-      }
-
-      if (user.role !== UserRole.ADMIN && user.role !== UserRole.MANAGER) {
+      if (ctx.dbUser.role !== UserRole.ADMIN && ctx.dbUser.role !== UserRole.MANAGER) {
         await this.telegramService.sendMessage(
           chatId,
           'This command is restricted to managers and admins.',
@@ -546,11 +503,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleAgencyCallback(ctx: Context): Promise<void> {
+  private async handleAgencyCallback(ctx: BotContext): Promise<void> {
     const chatId = ctx.callbackQuery?.message?.chat.id;
-    const from = ctx.from;
     const data = ctx.callbackQuery?.data;
-    if (!chatId || !from || !data) return;
+    if (!chatId || !data) return;
 
     await ctx.answerCallbackQuery().catch(() => {});
 
@@ -575,11 +531,9 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       // review:approve:<appId>
       if (data.startsWith('review:approve:')) {
         const appId = data.replace('review:approve:', '');
-        const telegramId = BigInt(from.id);
-        const user = await this.usersService.findByTelegramId(telegramId);
-        if (!user) return;
+        if (!ctx.dbUser) return;
 
-        const result = await this.agencyApp.approveApplication(appId, user.id);
+        const result = await this.agencyApp.approveApplication(appId, ctx.dbUser.id);
 
         await this.telegramService.sendMessage(
           chatId,
@@ -601,14 +555,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       // review:reject:<appId>
       if (data.startsWith('review:reject:')) {
         const appId = data.replace('review:reject:', '');
-        const telegramId = BigInt(from.id);
-        const user = await this.usersService.findByTelegramId(telegramId);
-        if (!user) return;
+        if (!ctx.dbUser) return;
 
         const result = this.agencyApp.setPendingRejectReason(
           chatId,
           appId,
-          user.id,
+          ctx.dbUser.id,
         );
         await this.sendWizardResponse(chatId, result);
         return;
@@ -654,7 +606,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------------------
 
   private async handleAddManagerText(
-    ctx: Context,
+    ctx: BotContext,
     chatId: number,
   ): Promise<void> {
     try {
@@ -707,15 +659,14 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleManagementCallback(ctx: Context): Promise<void> {
+  private async handleManagementCallback(ctx: BotContext): Promise<void> {
     const chatId = ctx.callbackQuery?.message?.chat.id;
-    const from = ctx.from;
     const data = ctx.callbackQuery?.data;
-    if (!chatId || !from || !data) return;
+    if (!chatId || !data || !ctx.dbUser) return;
 
     await ctx.answerCallbackQuery().catch(() => {});
 
-    const telegramId = BigInt(from.id);
+    const telegramId = ctx.dbUser.telegramId;
     this.logger.log(`[mgmt-callback] chatId=${chatId}, data=${data}`);
 
     try {

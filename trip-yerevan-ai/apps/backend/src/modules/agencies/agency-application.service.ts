@@ -47,10 +47,10 @@ export class AgencyApplicationService {
 
   async startOrResume(
     chatId: number,
-    telegramId: bigint,
+    userId: string,
   ): Promise<WizardStepResult> {
     this.logger.log(
-      `[agency:start] chatId=${chatId}, telegramId=${telegramId}`,
+      `[agency:start] chatId=${chatId}, userId=${userId}`,
     );
 
     // Check if already has an approved agency
@@ -67,7 +67,7 @@ export class AgencyApplicationService {
     // Check for pending/under-review application
     const existingApp = await this.prisma.agencyApplication.findFirst({
       where: {
-        applicantTelegramId: telegramId,
+        applicantUserId: userId,
         status: { in: ['SUBMITTED', 'UNDER_REVIEW'] },
       },
       orderBy: { createdAt: 'desc' },
@@ -88,7 +88,7 @@ export class AgencyApplicationService {
     // Start new wizard
     const state: AgencyWizardState = {
       step: AgencyWizardStep.NAME,
-      telegramId,
+      userId,
       specializations: [],
       countries: [],
     };
@@ -217,7 +217,7 @@ export class AgencyApplicationService {
   async approveApplication(
     applicationId: string,
     reviewerUserId: string,
-  ): Promise<{ agencyId: string; applicantTelegramId: bigint }> {
+  ): Promise<{ agencyId: string; applicantTelegramId: bigint | null }> {
     const app = await this.prisma.agencyApplication.findUniqueOrThrow({
       where: { id: applicationId },
     });
@@ -245,9 +245,9 @@ export class AgencyApplicationService {
         },
       });
 
-      // Create agent for the applicant (find/create user)
-      let user = await tx.user.findFirst({
-        where: { telegramId: app.applicantTelegramId },
+      // Create agent for the applicant
+      const user = await tx.user.findUnique({
+        where: { id: app.applicantUserId },
       });
 
       if (user) {
@@ -271,7 +271,7 @@ export class AgencyApplicationService {
         },
       });
 
-      return { agencyId: agency.id };
+      return { agencyId: agency.id, applicantTelegramId: user?.telegramId ?? null };
     });
 
     this.logger.log(
@@ -280,7 +280,7 @@ export class AgencyApplicationService {
 
     return {
       agencyId: result.agencyId,
-      applicantTelegramId: app.applicantTelegramId,
+      applicantTelegramId: result.applicantTelegramId,
     };
   }
 
@@ -288,7 +288,7 @@ export class AgencyApplicationService {
     applicationId: string,
     reviewerUserId: string,
     reason: string,
-  ): Promise<{ applicantTelegramId: bigint }> {
+  ): Promise<{ applicantUserId: string }> {
     const app = await this.prisma.agencyApplication.update({
       where: { id: applicationId },
       data: {
@@ -303,7 +303,7 @@ export class AgencyApplicationService {
       `[agency:rejected] applicationId=${applicationId}, reason=${reason}`,
     );
 
-    return { applicantTelegramId: app.applicantTelegramId };
+    return { applicantUserId: app.applicantUserId };
   }
 
   /** Sets up the "waiting for reason" state for rejection flow */
@@ -456,7 +456,7 @@ export class AgencyApplicationService {
     try {
       await this.prisma.agencyApplication.create({
         data: {
-          applicantTelegramId: state.telegramId,
+          applicantUserId: state.userId,
           draftData: {
             name: state.name,
             phone: state.phone,

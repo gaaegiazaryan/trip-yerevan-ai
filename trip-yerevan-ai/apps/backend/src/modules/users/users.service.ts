@@ -29,6 +29,22 @@ export class UsersService {
     return this.prisma.user.update({ where: { id }, data });
   }
 
+  async upsertByTelegram(data: TelegramUserData): Promise<User> {
+    return this.prisma.user.upsert({
+      where: { telegramId: data.telegramId },
+      create: {
+        telegramId: data.telegramId,
+        firstName: data.firstName,
+        lastName: data.lastName ?? null,
+        preferredLanguage: this.mapLanguageCode(data.languageCode),
+      },
+      update: {
+        firstName: data.firstName,
+        lastName: data.lastName ?? null,
+      },
+    });
+  }
+
   async findOrCreateByTelegram(data: TelegramUserData): Promise<User> {
     const existing = await this.findByTelegramId(data.telegramId);
     if (existing) {
