@@ -12,6 +12,7 @@ import { TelegramRateLimiter } from './telegram-rate-limiter';
 import { TelegramUserMiddleware } from './telegram-user.middleware';
 import { OfferWizardService } from '../offers/offer-wizard.service';
 import { isOfferSubmitResult } from '../offers/offer-wizard.types';
+import { OfferViewerService, OfferDetailResult } from '../offers/offer-viewer.service';
 import { AgencyApplicationService } from '../agencies/agency-application.service';
 import { AgenciesService } from '../agencies/agencies.service';
 import { AgencyManagementService } from '../agencies/agency-management.service';
@@ -36,6 +37,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly rateLimiter: TelegramRateLimiter,
     private readonly userMiddleware: TelegramUserMiddleware,
     private readonly offerWizard: OfferWizardService,
+    private readonly offerViewer: OfferViewerService,
     private readonly agencyApp: AgencyApplicationService,
     private readonly agenciesService: AgenciesService,
     private readonly agencyMgmt: AgencyManagementService,
@@ -67,8 +69,13 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       this.handleReviewCommand(ctx),
     );
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx));
+    this.bot.on('message:photo', (ctx) => this.handlePhotoMessage(ctx));
+    this.bot.on('message:document', (ctx) => this.handleDocumentMessage(ctx));
     this.bot.callbackQuery(/^action:/, (ctx) =>
       this.handleCallbackQuery(ctx),
+    );
+    this.bot.callbackQuery(/^offers:/, (ctx) =>
+      this.handleOffersViewCallback(ctx),
     );
     this.bot.callbackQuery(/^(rfq:|offer:)/, (ctx) =>
       this.handleOfferCallback(ctx),
@@ -391,6 +398,44 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handlePhotoMessage(ctx: BotContext): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    if (!this.offerWizard.isOnAttachmentsStep(chatId)) return;
+
+    const photos = ctx.message?.photo;
+    if (!photos || photos.length === 0) return;
+
+    // Use the largest photo (last in array)
+    const largest = photos[photos.length - 1];
+    const result = this.offerWizard.handleAttachment(chatId, {
+      type: 'HOTEL_IMAGE',
+      telegramFileId: largest.file_id,
+    });
+    await this.sendWizardResponse(chatId, result);
+  }
+
+  private async handleDocumentMessage(ctx: BotContext): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (!chatId) return;
+
+    if (!this.offerWizard.isOnAttachmentsStep(chatId)) return;
+
+    const doc = ctx.message?.document;
+    if (!doc) return;
+
+    const mimeType = doc.mime_type;
+    const isPdf = mimeType === 'application/pdf';
+    const result = this.offerWizard.handleAttachment(chatId, {
+      type: isPdf ? 'ITINERARY_PDF' : 'OTHER',
+      telegramFileId: doc.file_id,
+      fileName: doc.file_name ?? undefined,
+      mimeType: mimeType ?? undefined,
+    });
+    await this.sendWizardResponse(chatId, result);
+  }
+
   private async sendWizardResponse(
     chatId: number,
     result: { text: string; buttons?: { label: string; callbackData: string }[] },
@@ -399,6 +444,153 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       await this.telegramService.sendRfqToAgency(chatId, result.text, result.buttons);
     } else {
       await this.telegramService.sendMessage(chatId, result.text);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Offer viewing handlers (traveler-facing)
+  // ---------------------------------------------------------------------------
+
+  private async handleOffersViewCallback(ctx: BotContext): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.dbUser) {
+      await this.telegramService.sendMessage(
+        chatId,
+        getTelegramMessage('error_not_registered', 'RU'),
+      );
+      return;
+    }
+
+    this.logger.log(`[offers-view] chatId=${chatId}, data=${data}`);
+
+    try {
+      // offers:view:{travelRequestId} → initial list (NEW message)
+      if (data.startsWith('offers:view:')) {
+        const travelRequestId = data.replace('offers:view:', '');
+        const result = await this.offerViewer.getOfferList(
+          travelRequestId,
+          ctx.dbUser.id,
+        );
+
+        if (!result.buttons) {
+          await this.telegramService.sendMessage(chatId, result.text);
+          return;
+        }
+
+        await this.telegramService.sendRfqToAgency(
+          chatId,
+          result.text,
+          result.buttons,
+        );
+        return;
+      }
+
+      // offers:p:{travelRequestId}:{page} → pagination (EDIT message)
+      if (data.startsWith('offers:p:')) {
+        const parts = data.replace('offers:p:', '').split(':');
+        const travelRequestId = parts[0];
+        const page = parseInt(parts[1], 10) || 0;
+
+        const result = await this.offerViewer.getOfferList(
+          travelRequestId,
+          ctx.dbUser.id,
+          page,
+        );
+
+        if (!result.buttons) {
+          await this.telegramService.sendMessage(chatId, result.text);
+          return;
+        }
+
+        if (messageId) {
+          await this.telegramService.editMessageText(
+            chatId,
+            messageId,
+            result.text,
+            result.buttons,
+          );
+        } else {
+          await this.telegramService.sendRfqToAgency(
+            chatId,
+            result.text,
+            result.buttons,
+          );
+        }
+        return;
+      }
+
+      // offers:d:{offerId} → detail view (NEW message + images)
+      if (data.startsWith('offers:d:')) {
+        const offerId = data.replace('offers:d:', '');
+        const result = await this.offerViewer.getOfferDetail(
+          offerId,
+          ctx.dbUser.id,
+        );
+
+        if (!result.buttons) {
+          await this.telegramService.sendMessage(chatId, result.text);
+          return;
+        }
+
+        const detail = result as OfferDetailResult;
+
+        // Send hotel images as media group
+        if (detail.imageFileIds.length > 0) {
+          await this.telegramService.sendMediaGroup(chatId, detail.imageFileIds);
+        }
+
+        // Send documents
+        for (const doc of detail.documentFileIds) {
+          await this.telegramService.sendDocument(
+            chatId,
+            doc.fileId,
+            doc.fileName,
+          );
+        }
+
+        // Send detail text with back button
+        await this.telegramService.sendRfqToAgency(
+          chatId,
+          detail.text,
+          detail.buttons,
+        );
+        return;
+      }
+
+      // offers:b:{travelRequestId} → back to list (NEW message)
+      if (data.startsWith('offers:b:')) {
+        const travelRequestId = data.replace('offers:b:', '');
+        const result = await this.offerViewer.getOfferList(
+          travelRequestId,
+          ctx.dbUser.id,
+        );
+
+        if (!result.buttons) {
+          await this.telegramService.sendMessage(chatId, result.text);
+          return;
+        }
+
+        await this.telegramService.sendRfqToAgency(
+          chatId,
+          result.text,
+          result.buttons,
+        );
+        return;
+      }
+    } catch (error) {
+      this.logger.error(
+        `[offers-view] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
     }
   }
 
@@ -779,6 +971,7 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       ['agenciesService.isActiveMember', this.agenciesService?.isActiveMember],
       ['aiEngine.processMessage', this.aiEngine?.processMessage],
       ['offerWizard.hasActiveWizard', this.offerWizard?.hasActiveWizard],
+      ['offerViewer.getOfferList', this.offerViewer?.getOfferList],
       ['agencyMgmt.buildDashboard', this.agencyMgmt?.buildDashboard],
     ];
 

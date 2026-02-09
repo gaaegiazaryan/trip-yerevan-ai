@@ -65,6 +65,11 @@ function createMocks() {
     handleTextInput: jest.fn(),
   };
 
+  const offerViewer = {
+    getOfferList: jest.fn(),
+    getOfferDetail: jest.fn(),
+  };
+
   const agencyApp = {
     hasActiveWizard: jest.fn().mockReturnValue(false),
     hasPendingRejectReason: jest.fn().mockReturnValue(false),
@@ -98,6 +103,7 @@ function createMocks() {
     rateLimiter,
     userMiddleware,
     offerWizard,
+    offerViewer,
     agencyApp,
     agenciesService,
     agencyMgmt,
@@ -117,6 +123,7 @@ describe('TelegramUpdate', () => {
       mocks.rateLimiter as any,
       mocks.userMiddleware as any,
       mocks.offerWizard as any,
+      mocks.offerViewer as any,
       mocks.agencyApp as any,
       mocks.agenciesService as any,
       mocks.agencyMgmt as any,
@@ -197,6 +204,7 @@ describe('TelegramUpdate', () => {
         mocks.rateLimiter as any,
         mocks.userMiddleware as any,
         mocks.offerWizard as any,
+        mocks.offerViewer as any,
         mocks.agencyApp as any,
         mocks.agenciesService as any,
         mocks.agencyMgmt as any,

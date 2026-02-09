@@ -164,6 +164,90 @@ export class TelegramService {
     }
   }
 
+  async editMessageText(
+    chatId: number,
+    messageId: number,
+    text: string,
+    buttons?: { label: string; callbackData: string }[],
+  ): Promise<void> {
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot edit message');
+      return;
+    }
+
+    const keyboard = buttons ? new InlineKeyboard() : undefined;
+    if (keyboard && buttons) {
+      for (const action of buttons) {
+        keyboard.text(action.label, action.callbackData).row();
+      }
+    }
+
+    try {
+      await this.bot.api.editMessageText(chatId, messageId, text, {
+        parse_mode: 'Markdown',
+        ...(keyboard ? { reply_markup: keyboard } : {}),
+      });
+    } catch (error: unknown) {
+      // "message is not modified" is a no-op, not a real error
+      const desc = (error as { description?: string })?.description ?? '';
+      if (desc.includes('message is not modified')) return;
+
+      this.logger.warn(
+        `Markdown edit failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        await this.bot.api.editMessageText(chatId, messageId, text, {
+          ...(keyboard ? { reply_markup: keyboard } : {}),
+        });
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to edit message in chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
+    }
+  }
+
+  async sendMediaGroup(
+    chatId: number,
+    fileIds: string[],
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot || fileIds.length === 0) return;
+
+    try {
+      const media = fileIds.map((fileId, i) => ({
+        type: 'photo' as const,
+        media: fileId,
+        ...(i === 0 && caption ? { caption } : {}),
+      }));
+      await this.bot.api.sendMediaGroup(chatId, media);
+    } catch (error) {
+      this.logger.error(
+        `Failed to send media group to chat ${chatId}: ${error}`,
+      );
+    }
+  }
+
+  async sendDocument(
+    chatId: number,
+    fileId: string,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot) return;
+
+    try {
+      await this.bot.api.sendDocument(chatId, fileId, {
+        caption,
+        parse_mode: 'Markdown',
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send document to chat ${chatId}: ${error}`,
+      );
+    }
+  }
+
   private buildCallbackData(action: SuggestedAction): string {
     switch (action.type) {
       case 'confirm':

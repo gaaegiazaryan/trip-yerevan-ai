@@ -148,6 +148,41 @@ enum RfqDeliveryStatus {
   RESPONDED
 }
 
+enum HotelStars {
+  ONE
+  TWO
+  THREE
+  FOUR
+  FIVE
+}
+
+enum MealPlan {
+  RO
+  BB
+  HB
+  FB
+  AI
+  UAI
+}
+
+enum FlightClass {
+  ECONOMY
+  BUSINESS
+}
+
+enum TransferType {
+  GROUP
+  PRIVATE
+  VIP
+}
+
+enum AttachmentType {
+  HOTEL_IMAGE
+  ITINERARY_PDF
+  VOUCHER
+  OTHER
+}
+
 // ============================================================================
 // USERS
 // ============================================================================
@@ -298,11 +333,43 @@ model Offer {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
+  // Price details
+  priceIncludes   String[]    @default([])
+  priceExcludes   String[]    @default([])
+
+  // Hotel
+  hotelName        String?
+  hotelStars       HotelStars?
+  roomType         String?
+  mealPlan         MealPlan?
+  hotelLocation    String?
+  hotelDescription String?
+
+  // Flight
+  airline               String?
+  departureFlightNumber String?
+  returnFlightNumber    String?
+  baggageIncluded       Boolean?
+  flightClass           FlightClass?
+
+  // Transfer
+  transferIncluded Boolean?
+  transferType     TransferType?
+
+  // Travel details
+  departureDate     DateTime? @db.Date
+  returnDate        DateTime? @db.Date
+  nightsCount       Int?
+  adults            Int?
+  children          Int?
+  insuranceIncluded Boolean?
+
   // Relations
-  travelRequest TravelRequest @relation(fields: [travelRequestId], references: [id])
-  agency        Agency        @relation(fields: [agencyId], references: [id])
+  travelRequest TravelRequest    @relation(fields: [travelRequestId], references: [id])
+  agency        Agency           @relation(fields: [agencyId], references: [id])
   membership    AgencyMembership @relation(fields: [membershipId], references: [id])
   items         OfferItem[]
+  attachments   OfferAttachment[]
   booking       Booking?
 
   @@unique([travelRequestId, agencyId])
@@ -327,6 +394,24 @@ model OfferItem {
 
   @@index([offerId])
   @@map("offer_items")
+}
+
+model OfferAttachment {
+  id             String         @id @default(uuid()) @db.Uuid
+  offerId        String?        @db.Uuid
+  draftChatId    BigInt?
+  type           AttachmentType
+  telegramFileId String
+  fileName       String?
+  mimeType       String?
+  createdAt      DateTime       @default(now())
+
+  // Relations
+  offer Offer? @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@index([offerId])
+  @@index([draftChatId])
+  @@map("offer_attachments")
 }
 
 // ============================================================================
