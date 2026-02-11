@@ -146,6 +146,7 @@ enum BookingStatus {
   AWAITING_AGENCY_CONFIRMATION
   AGENCY_CONFIRMED
   MANAGER_VERIFIED
+  MEETING_SCHEDULED
   PAYMENT_PENDING
   PAID
   IN_PROGRESS
@@ -153,6 +154,27 @@ enum BookingStatus {
   CANCELLED
   EXPIRED
   REJECTED_BY_AGENCY
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum MeetingProposalStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  COUNTER_PROPOSED
+  EXPIRED
+}
+
+enum MeetingProposer {
+  USER
+  MANAGER
 }
 
 enum AIConversationStatus {
@@ -222,6 +244,26 @@ enum SupportThreadStatus {
   CLOSED
 }
 
+enum NoteEntityType {
+  TRAVELER
+  AGENCY
+  BOOKING
+  MEETING
+}
+
+enum RiskSeverity {
+  LOW
+  MED
+  HIGH
+}
+
+enum RiskEntityType {
+  USER
+  AGENCY
+  PROXY_CHAT
+  BOOKING
+}
+
 // ============================================================================
 // USERS
 // ============================================================================
@@ -235,6 +277,9 @@ model User {
   preferredLanguage Language  @default(RU)
   role              UserRole @default(TRAVELER)
   status            UserStatus @default(ACTIVE)
+  vip               Boolean    @default(false)
+  blacklisted       Boolean    @default(false)
+  blacklistReason   String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -251,6 +296,8 @@ model User {
   managedProxyChats    ProxyChat[]         @relation("ProxyChatManager")
   supportThreads       SupportThread[]
   supportMessages      SupportMessage[]    @relation("SupportMessageSender")
+  authoredNotes        ManagerNote[]
+  managedBookings      Booking[]           @relation("BookingManager")
 
   @@map("users")
 }
@@ -271,6 +318,8 @@ model Agency {
   specializations  String[]     @default([])
   regions          String[]     @default([])
   rating           Decimal      @default(0) @db.Decimal(3, 2)
+  rejectionReason  String?
+  trustBadge       Boolean      @default(false)
   verifiedAt       DateTime?
   verifiedByUserId String?      @db.Uuid
   createdAt        DateTime     @default(now())
@@ -597,9 +646,16 @@ model Booking {
   // Expiry scheduling
   expireAt DateTime?
 
+  // Manager assignment (pipeline owner)
+  managerId String? @db.Uuid
+
   // Actor tracking
   agencyConfirmedBy String? @db.Uuid
   managerVerifiedBy String? @db.Uuid
+
+  // Manager verification
+  managerNotes          String?
+  verificationChecklist Json?
 
   // Cancellation
   cancelReason String?
@@ -616,12 +672,16 @@ model Booking {
   offer         Offer         @relation(fields: [offerId], references: [id])
   user          User          @relation(fields: [userId], references: [id])
   agency        Agency        @relation(fields: [agencyId], references: [id])
-  events        BookingEvent[]
+  manager       User?         @relation("BookingManager", fields: [managerId], references: [id], onDelete: SetNull)
+  events           BookingEvent[]
+  meetings         Meeting[]
+  meetingProposals MeetingProposal[]
 
   @@index([userId])
   @@index([agencyId])
   @@index([status])
   @@index([expireAt])
+  @@index([managerId])
   @@map("bookings")
 }
 
@@ -640,6 +700,54 @@ model BookingEvent {
 
   @@index([bookingId, createdAt])
   @@map("booking_events")
+}
+
+model Meeting {
+  id          String        @id @default(uuid()) @db.Uuid
+  bookingId   String        @db.Uuid
+  scheduledBy String        @db.Uuid
+  status      MeetingStatus @default(SCHEDULED)
+  scheduledAt DateTime
+  location    String?
+  notes       String?
+  confirmedAt DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([status])
+  @@map("meetings")
+}
+
+model MeetingProposal {
+  id                String                @id @default(uuid()) @db.Uuid
+  bookingId         String                @db.Uuid
+  proposedBy        String                @db.Uuid
+  proposerRole      MeetingProposer
+  status            MeetingProposalStatus @default(PENDING)
+  proposedDate      DateTime
+  proposedLocation  String?
+  notes             String?
+  counterProposalId String?               @unique @db.Uuid
+  respondedBy       String?               @db.Uuid
+  respondedAt       DateTime?
+  rejectionReason   String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  // Relations
+  booking         Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  counterProposal MeetingProposal? @relation("ProposalChain", fields: [counterProposalId], references: [id])
+  counterOf       MeetingProposal? @relation("ProposalChain")
+
+  @@index([bookingId, status])
+  @@index([bookingId, createdAt])
+  @@map("meeting_proposals")
 }
 
 // ============================================================================
@@ -760,4 +868,43 @@ model AgencyApplication {
   @@index([applicantUserId])
   @@index([status])
   @@map("agency_applications")
+}
+
+// ============================================================================
+// MANAGER NOTES
+// ============================================================================
+
+model ManagerNote {
+  id         String         @id @default(uuid()) @db.Uuid
+  authorId   String         @db.Uuid
+  entityType NoteEntityType
+  entityId   String         @db.Uuid
+  text       String
+  createdAt  DateTime       @default(now())
+
+  // Relations
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([authorId])
+  @@map("manager_notes")
+}
+
+// ============================================================================
+// RISK EVENTS
+// ============================================================================
+
+model RiskEvent {
+  id         String         @id @default(uuid()) @db.Uuid
+  entityType RiskEntityType
+  entityId   String         @db.Uuid
+  severity   RiskSeverity
+  reason     String
+  payload    Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([entityType, entityId])
+  @@index([severity])
+  @@index([createdAt])
+  @@map("risk_events")
 }

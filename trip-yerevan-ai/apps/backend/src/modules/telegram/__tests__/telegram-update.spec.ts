@@ -114,6 +114,29 @@ function createMocks() {
     handleCallback: jest.fn().mockResolvedValue({ text: 'OK', notifications: [] }),
   };
 
+  const meetingCallbackHandler = {
+    handleCallback: jest.fn().mockResolvedValue({ text: 'OK', notifications: [] }),
+  };
+
+  const proposalWizard = {
+    isActive: jest.fn().mockReturnValue(false),
+    start: jest.fn().mockReturnValue({ text: 'Select date', buttons: [] }),
+    handleCallback: jest.fn().mockReturnValue({ text: 'OK', buttons: [] }),
+    handleTextInput: jest.fn().mockReturnValue({ text: 'OK', buttons: [] }),
+    cancel: jest.fn(),
+    getState: jest.fn().mockReturnValue(undefined),
+  };
+
+  const proposalCallbackHandler = {
+    handleCallback: jest.fn().mockResolvedValue({ text: 'OK', notifications: [] }),
+  };
+
+  const proposalService = {
+    createProposal: jest.fn().mockResolvedValue({ success: true, proposalId: 'prop-1', notifications: [] }),
+    counterProposal: jest.fn().mockResolvedValue({ success: true, proposalId: 'prop-2', notifications: [] }),
+    buildProposalNotifications: jest.fn().mockResolvedValue([]),
+  };
+
   const managerTakeover = {
     onBookingCreated: jest.fn().mockResolvedValue({}),
     claimChat: jest.fn(),
@@ -132,6 +155,10 @@ function createMocks() {
     agencyMgmt,
     bookingAcceptance,
     bookingCallbackHandler,
+    meetingCallbackHandler,
+    proposalWizard,
+    proposalCallbackHandler,
+    proposalService,
     managerTakeover,
   };
 }
@@ -155,6 +182,10 @@ describe('TelegramUpdate', () => {
       mocks.agencyMgmt as any,
       mocks.bookingAcceptance as any,
       mocks.bookingCallbackHandler as any,
+      mocks.meetingCallbackHandler as any,
+      mocks.proposalWizard as any,
+      mocks.proposalCallbackHandler as any,
+      mocks.proposalService as any,
       mocks.managerTakeover as any,
     );
   });
@@ -229,6 +260,10 @@ describe('TelegramUpdate', () => {
         mocks.agencyMgmt as any,
         mocks.bookingAcceptance as any,
         mocks.bookingCallbackHandler as any,
+        mocks.meetingCallbackHandler as any,
+        mocks.proposalWizard as any,
+        mocks.proposalCallbackHandler as any,
+        mocks.proposalService as any,
         mocks.managerTakeover as any,
       );
 

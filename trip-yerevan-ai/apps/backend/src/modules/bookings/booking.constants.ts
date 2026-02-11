@@ -25,6 +25,10 @@ export const VALID_BOOKING_TRANSITIONS: Record<BookingStatus, BookingStatus[]> =
       BookingStatus.CANCELLED,
     ],
     [BookingStatus.MANAGER_VERIFIED]: [
+      BookingStatus.MEETING_SCHEDULED,
+      BookingStatus.CANCELLED,
+    ],
+    [BookingStatus.MEETING_SCHEDULED]: [
       BookingStatus.PAYMENT_PENDING,
       BookingStatus.CANCELLED,
     ],

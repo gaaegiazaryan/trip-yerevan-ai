@@ -10,6 +10,8 @@ import {
   ProxyChatState,
 } from '@prisma/client';
 import { formatForwardedMessage } from './proxy-chat-message-formatter';
+import { RiskService } from '../risk/risk.service';
+import { RiskSeverity, RiskEntityType } from '@prisma/client';
 
 type SupportedLanguage = 'RU' | 'AM' | 'EN';
 
@@ -67,6 +69,7 @@ export class ProxyChatSessionService {
     private readonly contactLeakGuard: ContactLeakGuard,
     private readonly chatPermission: ChatPermissionService,
     private readonly chatAuditLog: ChatAuditLogService,
+    private readonly riskService: RiskService,
   ) {}
 
   hasActiveSession(chatId: number): boolean {
@@ -559,6 +562,20 @@ export class ProxyChatSessionService {
           session.senderId,
           { violations: leakCheck.violations, content: content.substring(0, 200) },
         );
+
+        // Create risk event for audit trail
+        this.riskService.create({
+          entityType: RiskEntityType.PROXY_CHAT,
+          entityId: session.proxyChatId,
+          severity: RiskSeverity.MED,
+          reason: `Contact leak blocked: ${leakCheck.violations.join(', ')}`,
+          payload: {
+            senderId: session.senderId,
+            senderType: session.senderType,
+            violations: leakCheck.violations,
+            contentPreview: content.substring(0, 200),
+          },
+        });
 
         return {
           targets: [],

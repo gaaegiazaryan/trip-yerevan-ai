@@ -10,6 +10,12 @@ function createMockPrisma() {
   return {
     booking: { findUnique: jest.fn(), update: jest.fn() },
     bookingEvent: { create: jest.fn() },
+    user: {
+      findMany: jest.fn().mockResolvedValue([
+        { telegramId: BigInt(55555) },
+        { telegramId: BigInt(66666) },
+      ]),
+    },
     $transaction: jest.fn(),
   };
 }
@@ -34,14 +40,20 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     status: BookingStatus.CREATED,
     totalPrice: 1500,
     currency: 'USD',
-    user: { telegramId: BigInt(12345) },
+    user: { telegramId: BigInt(12345), firstName: 'John', lastName: 'Doe' },
     agency: {
       name: 'TestAgency',
       agencyTelegramChatId: null,
       memberships: [{ user: { telegramId: BigInt(88888) } }],
     },
     offer: {
-      travelRequest: { destination: 'Dubai' },
+      hotelName: 'Grand Hotel',
+      departureDate: new Date('2026-03-15'),
+      returnDate: new Date('2026-03-22'),
+      nightsCount: 7,
+      adults: 2,
+      description: 'All-inclusive package',
+      travelRequest: { destination: 'Dubai', adults: 2, children: 1 },
       membership: { user: { telegramId: BigInt(99999) } },
     },
     ...overrides,
@@ -362,7 +374,7 @@ describe('BookingStateMachineService', () => {
   // -------------------------------------------------------------------------
   // 14. Notifications built for CANCELLED (traveler + agent + manager)
   // -------------------------------------------------------------------------
-  it('should build notifications for traveler, agent, and manager on CANCELLED', async () => {
+  it('should build notifications for traveler, agent, and all managers on CANCELLED', async () => {
     prisma.booking.findUnique.mockResolvedValue(
       makeBooking({ status: BookingStatus.PAID }),
     );
@@ -383,13 +395,134 @@ describe('BookingStateMachineService', () => {
     expect(chatIds).toContain(Number(BigInt(12345)));
     // Agent (offer.membership.user.telegramId)
     expect(chatIds).toContain(Number(BigInt(99999)));
-    // Manager channel
+    // Individual managers from DB
+    expect(chatIds).toContain(55555);
+    expect(chatIds).toContain(66666);
+    // Manager channel as fallback
     expect(chatIds).toContain(77777);
 
     // All should mention cancellation
     for (const notif of result.notifications) {
       expect(notif.text).toContain('Cancelled');
     }
+
+    // Verify managers were queried from DB
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: { role: 'MANAGER', status: 'ACTIVE' },
+      select: { telegramId: true },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 14b. AGENCY_CONFIRMED sends rich verification summary to manager channel
+  // -------------------------------------------------------------------------
+  it('should send rich verification summary to all managers on AGENCY_CONFIRMED', async () => {
+    prisma.booking.findUnique.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AWAITING_AGENCY_CONFIRMATION }),
+    );
+    prisma.booking.update.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AGENCY_CONFIRMED }),
+    );
+
+    const result = await service.transition(
+      'booking-001',
+      BookingStatus.AGENCY_CONFIRMED,
+      { triggeredBy: 'agent-001' },
+    );
+
+    expect(result.success).toBe(true);
+
+    // Each individual manager should get rich summary with buttons
+    const managerNotifs = result.notifications.filter(
+      (n) => [55555, 66666, 77777].includes(n.chatId),
+    );
+    // 2 DB managers + 1 channel fallback = 3
+    expect(managerNotifs.length).toBe(3);
+
+    for (const managerNotif of managerNotifs) {
+      expect(managerNotif.text).toContain('Booking Verification Required');
+      expect(managerNotif.text).toContain('John Doe');
+      expect(managerNotif.text).toContain('Dubai');
+      expect(managerNotif.text).toContain('TestAgency');
+      expect(managerNotif.text).toContain('Grand Hotel');
+      expect(managerNotif.text).toContain('2 adults, 1 children');
+      expect(managerNotif.buttons).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ callbackData: 'bk:verify:booking-001' }),
+          expect.objectContaining({ callbackData: 'bk:cancel:booking-001' }),
+        ]),
+      );
+    }
+
+    // Traveler should also be notified
+    const travelerNotif = result.notifications.find(
+      (n) => n.chatId === Number(BigInt(12345)),
+    );
+    expect(travelerNotif).toBeDefined();
+    expect(travelerNotif!.text).toContain('Agency Confirmed');
+
+    // Verify managers were queried from DB
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: { role: 'MANAGER', status: 'ACTIVE' },
+      select: { telegramId: true },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 14c. Falls back to channel when no managers in DB
+  // -------------------------------------------------------------------------
+  it('should fall back to channel when no managers exist in DB', async () => {
+    prisma.user.findMany.mockResolvedValue([]);
+
+    prisma.booking.findUnique.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AWAITING_AGENCY_CONFIRMATION }),
+    );
+    prisma.booking.update.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AGENCY_CONFIRMED }),
+    );
+
+    const result = await service.transition(
+      'booking-001',
+      BookingStatus.AGENCY_CONFIRMED,
+      { triggeredBy: 'agent-001' },
+    );
+
+    expect(result.success).toBe(true);
+
+    // Should still notify channel as fallback
+    const managerNotif = result.notifications.find(
+      (n) => n.chatId === 77777,
+    );
+    expect(managerNotif).toBeDefined();
+    expect(managerNotif!.text).toContain('Booking Verification Required');
+  });
+
+  // -------------------------------------------------------------------------
+  // 14d. No duplicate notifications when manager chatId equals channel chatId
+  // -------------------------------------------------------------------------
+  it('should not send duplicate notification when manager telegramId matches channel', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      { telegramId: BigInt(77777) }, // Same as MANAGER_CHANNEL_CHAT_ID
+    ]);
+
+    prisma.booking.findUnique.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AWAITING_AGENCY_CONFIRMATION }),
+    );
+    prisma.booking.update.mockResolvedValue(
+      makeBooking({ status: BookingStatus.AGENCY_CONFIRMED }),
+    );
+
+    const result = await service.transition(
+      'booking-001',
+      BookingStatus.AGENCY_CONFIRMED,
+      { triggeredBy: 'agent-001' },
+    );
+
+    // Exactly 1 manager notification (deduped), not 2
+    const managerNotifs = result.notifications.filter(
+      (n) => n.chatId === 77777,
+    );
+    expect(managerNotifs).toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------

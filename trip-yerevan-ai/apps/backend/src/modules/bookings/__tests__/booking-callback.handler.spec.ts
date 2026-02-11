@@ -90,7 +90,7 @@ describe('BookingCallbackHandler', () => {
   // Manager actions
   // -----------------------------------------------------------------------
 
-  it('should allow manager to verify and auto-chain to PAYMENT_PENDING', async () => {
+  it('should allow manager to verify and auto-chain to MEETING_SCHEDULED', async () => {
     stateMachine.transition
       .mockResolvedValueOnce({
         success: true,
@@ -99,7 +99,7 @@ describe('BookingCallbackHandler', () => {
       })
       .mockResolvedValueOnce({
         success: true,
-        notifications: [{ chatId: 2, text: 'Payment pending' }],
+        notifications: [{ chatId: 2, text: 'Meeting scheduled' }],
         booking: { id: 'booking-001' },
       });
 
@@ -116,15 +116,15 @@ describe('BookingCallbackHandler', () => {
       { triggeredBy: 'user-manager' },
     );
 
-    // Second transition (auto-chain): PAYMENT_PENDING
+    // Second transition (auto-chain): MEETING_SCHEDULED
     expect(stateMachine.transition).toHaveBeenCalledWith(
       'booking-001',
-      BookingStatus.PAYMENT_PENDING,
+      BookingStatus.MEETING_SCHEDULED,
       { triggeredBy: 'user-manager' },
     );
 
     expect(result.text).toContain('verified');
-    expect(result.text).toContain('Payment instructions');
+    expect(result.text).toContain('Meeting scheduling');
     // Notifications from both transitions are merged
     expect(result.notifications).toHaveLength(2);
   });

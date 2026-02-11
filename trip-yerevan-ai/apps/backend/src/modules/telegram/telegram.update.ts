@@ -18,6 +18,11 @@ import { AgenciesService } from '../agencies/agencies.service';
 import { AgencyManagementService } from '../agencies/agency-management.service';
 import { BookingAcceptanceService } from '../bookings/booking-acceptance.service';
 import { BookingCallbackHandler } from '../bookings/booking-callback.handler';
+import { MeetingCallbackHandler } from '../bookings/meeting-callback.handler';
+import { MeetingProposalWizardService } from '../bookings/meeting-proposal-wizard.service';
+import { MeetingProposalCallbackHandler } from '../bookings/meeting-proposal-callback.handler';
+import { MeetingProposalService } from '../bookings/meeting-proposal.service';
+import { MeetingProposer } from '@prisma/client';
 import { ManagerTakeoverService } from '../proxy-chat/manager-takeover.service';
 import {
   getTelegramMessage,
@@ -50,6 +55,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     private readonly agencyMgmt: AgencyManagementService,
     private readonly bookingAcceptance: BookingAcceptanceService,
     private readonly bookingCallbackHandler: BookingCallbackHandler,
+    private readonly meetingCallbackHandler: MeetingCallbackHandler,
+    private readonly proposalWizard: MeetingProposalWizardService,
+    private readonly proposalCallbackHandler: MeetingProposalCallbackHandler,
+    private readonly proposalService: MeetingProposalService,
     private readonly managerTakeover: ManagerTakeoverService,
   ) {}
 
@@ -101,6 +110,15 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     );
     this.bot.callbackQuery(/^bk:/, (ctx) =>
       this.handleBookingCallback(ctx),
+    );
+    this.bot.callbackQuery(/^mtg:/, (ctx) =>
+      this.handleMeetingCallback(ctx),
+    );
+    this.bot.callbackQuery(/^mpw:/, (ctx) =>
+      this.handleProposalWizardCallback(ctx),
+    );
+    this.bot.callbackQuery(/^mpr:/, (ctx) =>
+      this.handleProposalResponseCallback(ctx),
     );
 
     this.bot.catch((err) => {
@@ -207,6 +225,12 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // Route to meeting proposal wizard if active
+    if (this.proposalWizard.isActive(chatId)) {
+      await this.handleProposalWizardText(chatId, text);
+      return;
+    }
+
     if (!ctx.dbUser) {
       await this.telegramService.sendMessage(
         chatId,
@@ -216,6 +240,16 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     }
 
     const telegramId = ctx.dbUser.telegramId;
+
+    // Blacklisted users cannot create new travel requests
+    if (ctx.dbUser.blacklisted) {
+      const lang = prismaLanguageToSupported(ctx.dbUser.preferredLanguage);
+      await this.telegramService.sendMessage(
+        chatId,
+        getTelegramMessage('user_blacklisted', lang),
+      );
+      return;
+    }
 
     if (this.rateLimiter.isRateLimited(telegramId)) {
       this.logger.debug(`[rate-limited] telegramId=${telegramId}`);
@@ -574,35 +608,43 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        // Trigger manager takeover flow (transition chats to BOOKED, notify manager channel)
+        // Trigger manager takeover flow (transition chats to BOOKED, notify manager channel).
+        // Non-critical: booking already created, don't crash if takeover fails.
         if (result.bookingId) {
-          const takeoverResult = await this.managerTakeover.onBookingCreated(
-            result.travelRequestId,
-            result.bookingId,
-            this.bookingAcceptance.getManagerChannelChatId() ?? undefined,
-          );
+          try {
+            const takeoverResult = await this.managerTakeover.onBookingCreated(
+              result.travelRequestId,
+              result.bookingId,
+              this.bookingAcceptance.getManagerChannelChatId() ?? undefined,
+            );
 
-          if (takeoverResult.managerChannelNotification) {
-            const notif = takeoverResult.managerChannelNotification;
-            if (notif.buttons && notif.buttons.length > 0) {
-              await this.telegramService.sendRfqToAgency(
-                notif.chatId,
-                notif.text,
-                notif.buttons,
-              ).catch((err) => {
-                this.logger.error(
-                  `[manager-takeover] Failed to send to manager channel: ${err}`,
-                );
-              });
-            } else {
-              await this.telegramService
-                .sendMessage(notif.chatId, notif.text)
-                .catch((err) => {
+            if (takeoverResult.managerChannelNotification) {
+              const notif = takeoverResult.managerChannelNotification;
+              if (notif.buttons && notif.buttons.length > 0) {
+                await this.telegramService.sendRfqToAgency(
+                  notif.chatId,
+                  notif.text,
+                  notif.buttons,
+                ).catch((err) => {
                   this.logger.error(
                     `[manager-takeover] Failed to send to manager channel: ${err}`,
                   );
                 });
+              } else {
+                await this.telegramService
+                  .sendMessage(notif.chatId, notif.text)
+                  .catch((err) => {
+                    this.logger.error(
+                      `[manager-takeover] Failed to send to manager channel: ${err}`,
+                    );
+                  });
+              }
             }
+          } catch (takeoverErr) {
+            this.logger.error(
+              `[manager-takeover] Failed for bookingId=${result.bookingId}: ${takeoverErr}`,
+              takeoverErr instanceof Error ? takeoverErr.stack : undefined,
+            );
           }
         }
         return;
@@ -865,6 +907,285 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error(
         `[booking-callback] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Meeting lifecycle callbacks (mtg:schedule, mtg:complete, etc.)
+  // -----------------------------------------------------------------------
+
+  private async handleMeetingCallback(ctx: BotContext): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.dbUser) return;
+
+    this.logger.log(
+      `[meeting-callback] chatId=${chatId}, data=${data}, userId=${ctx.dbUser.id}`,
+    );
+
+    try {
+      const result = await this.meetingCallbackHandler.handleCallback(
+        data,
+        ctx.dbUser.id,
+        ctx.dbUser.role,
+      );
+
+      await this.telegramService.sendMessage(chatId, result.text);
+
+      for (const notification of result.notifications) {
+        try {
+          if (notification.buttons && notification.buttons.length > 0) {
+            await this.telegramService.sendRfqToAgency(
+              notification.chatId,
+              notification.text,
+              notification.buttons,
+            );
+          } else {
+            await this.telegramService.sendMessage(
+              notification.chatId,
+              notification.text,
+            );
+          }
+        } catch (err) {
+          this.logger.error(
+            `[meeting-callback] Failed to notify chatId=${notification.chatId}: ${err}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `[meeting-callback] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Meeting proposal wizard callbacks (mpw:start, mpw:d:*, mpw:t:*, etc.)
+  // -----------------------------------------------------------------------
+
+  private async handleProposalWizardCallback(ctx: BotContext): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.dbUser) return;
+
+    this.logger.log(
+      `[proposal-wizard-cb] chatId=${chatId}, data=${data}, userId=${ctx.dbUser.id}`,
+    );
+
+    try {
+      // mpw:start:{bookingId} → start a new wizard
+      if (data.startsWith('mpw:start:')) {
+        const bookingId = data.replace('mpw:start:', '');
+        const result = this.proposalWizard.start(chatId, bookingId);
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+
+      // All other mpw: callbacks delegate to wizard
+      const result = this.proposalWizard.handleCallback(chatId, data);
+
+      if (result.done && result.proposal) {
+        // Wizard completed — create the proposal
+        const draft = result.proposal;
+        const proposedDate = new Date(`${draft.date}T${draft.time}:00`);
+
+        const state = this.proposalWizard.getState(chatId);
+        const isCounter = state?.isCounterProposal ?? false;
+        const originalProposalId = state?.originalProposalId;
+
+        let createResult;
+        if (isCounter && originalProposalId) {
+          createResult = await this.proposalService.counterProposal(
+            originalProposalId,
+            {
+              bookingId: draft.bookingId,
+              proposedBy: ctx.dbUser.id,
+              proposerRole:
+                ctx.dbUser.role === UserRole.MANAGER ||
+                ctx.dbUser.role === UserRole.ADMIN
+                  ? MeetingProposer.MANAGER
+                  : MeetingProposer.USER,
+              proposedDate,
+              proposedLocation: draft.location,
+              notes: draft.notes,
+            },
+          );
+        } else {
+          createResult = await this.proposalService.createProposal({
+            bookingId: draft.bookingId,
+            proposedBy: ctx.dbUser.id,
+            proposerRole:
+              ctx.dbUser.role === UserRole.MANAGER ||
+              ctx.dbUser.role === UserRole.ADMIN
+                ? MeetingProposer.MANAGER
+                : MeetingProposer.USER,
+            proposedDate,
+            proposedLocation: draft.location,
+            notes: draft.notes,
+          });
+        }
+
+        if (!createResult.success) {
+          await this.telegramService.sendMessage(
+            chatId,
+            createResult.error ?? 'Failed to create proposal.',
+          );
+          return;
+        }
+
+        await this.telegramService.sendMessage(
+          chatId,
+          '\u2705 Meeting proposal sent! Waiting for response.',
+        );
+
+        // Notify the other party
+        const proposerRole =
+          ctx.dbUser.role === UserRole.MANAGER ||
+          ctx.dbUser.role === UserRole.ADMIN
+            ? MeetingProposer.MANAGER
+            : MeetingProposer.USER;
+        const notifications =
+          await this.proposalService.buildProposalNotifications(
+            createResult.proposalId!,
+            proposerRole,
+            proposedDate,
+            draft.location,
+            draft.notes,
+          );
+
+        for (const notification of notifications) {
+          try {
+            if (notification.buttons && notification.buttons.length > 0) {
+              await this.telegramService.sendRfqToAgency(
+                notification.chatId,
+                notification.text,
+                notification.buttons,
+              );
+            } else {
+              await this.telegramService.sendMessage(
+                notification.chatId,
+                notification.text,
+              );
+            }
+          } catch (err) {
+            this.logger.error(
+              `[proposal-notify] Failed to notify chatId=${notification.chatId}: ${err}`,
+            );
+          }
+        }
+        return;
+      }
+
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[proposal-wizard-cb] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Meeting proposal response callbacks (mpr:accept, mpr:reject, mpr:counter)
+  // -----------------------------------------------------------------------
+
+  private async handleProposalResponseCallback(ctx: BotContext): Promise<void> {
+    const chatId = ctx.callbackQuery?.message?.chat.id;
+    const data = ctx.callbackQuery?.data;
+    if (!chatId || !data) return;
+
+    await ctx.answerCallbackQuery().catch(() => {});
+
+    if (!ctx.dbUser) return;
+
+    this.logger.log(
+      `[proposal-response-cb] chatId=${chatId}, data=${data}, userId=${ctx.dbUser.id}`,
+    );
+
+    try {
+      const result = await this.proposalCallbackHandler.handleCallback(
+        data,
+        ctx.dbUser.id,
+        ctx.dbUser.role,
+        chatId,
+      );
+
+      // If a counter-proposal wizard was started, send the wizard's first section
+      if (result.wizardStarted) {
+        // The handler already called wizardService.start() which set up state.
+        // result.text contains the wizard's date section text from start().
+        // We need to get the buttons from the current wizard state.
+        await this.sendWizardResponse(chatId, result);
+        return;
+      }
+
+      await this.telegramService.sendMessage(chatId, result.text);
+
+      for (const notification of result.notifications) {
+        try {
+          if (notification.buttons && notification.buttons.length > 0) {
+            await this.telegramService.sendRfqToAgency(
+              notification.chatId,
+              notification.text,
+              notification.buttons,
+            );
+          } else {
+            await this.telegramService.sendMessage(
+              notification.chatId,
+              notification.text,
+            );
+          }
+        } catch (err) {
+          this.logger.error(
+            `[proposal-response-cb] Failed to notify chatId=${notification.chatId}: ${err}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `[proposal-response-cb] Error chatId=${chatId}: ${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      await this.telegramService
+        .sendMessage(chatId, 'Something went wrong. Please try again.')
+        .catch(() => {});
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Meeting proposal wizard text input
+  // -----------------------------------------------------------------------
+
+  private async handleProposalWizardText(
+    chatId: number,
+    text: string,
+  ): Promise<void> {
+    try {
+      const result = this.proposalWizard.handleTextInput(chatId, text);
+      await this.sendWizardResponse(chatId, result);
+    } catch (error) {
+      this.logger.error(
+        `[proposal-wizard-text] Error chatId=${chatId}: ${error}`,
         error instanceof Error ? error.stack : undefined,
       );
       await this.telegramService
@@ -1290,6 +1611,10 @@ export class TelegramUpdate implements OnModuleInit, OnModuleDestroy {
       ['agencyMgmt.buildDashboard', this.agencyMgmt?.buildDashboard],
       ['bookingAcceptance.showConfirmation', this.bookingAcceptance?.showConfirmation],
       ['bookingCallbackHandler.handleCallback', this.bookingCallbackHandler?.handleCallback],
+      ['meetingCallbackHandler.handleCallback', this.meetingCallbackHandler?.handleCallback],
+      ['proposalWizard.isActive', this.proposalWizard?.isActive],
+      ['proposalCallbackHandler.handleCallback', this.proposalCallbackHandler?.handleCallback],
+      ['proposalService.createProposal', this.proposalService?.createProposal],
       ['managerTakeover.onBookingCreated', this.managerTakeover?.onBookingCreated],
     ];
 

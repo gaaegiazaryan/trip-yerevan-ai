@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
 // Infrastructure
 import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/queue/queue.module';
+import { CacheModule } from './infra/cache/cache.module';
 import { LoggerModule } from './infra/logger/logger.module';
 
 // Platform modules
@@ -19,6 +20,11 @@ import { BookingsModule } from './modules/bookings/bookings.module';
 import { DistributionModule } from './modules/distribution/distribution.module';
 import { AiModule } from './modules/ai/ai.module';
 import { TelegramModule } from './modules/telegram/telegram.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { RiskModule } from './modules/risk/risk.module';
+
+// Middleware
+import { DevAuthMiddleware } from './common/middleware/dev-auth.middleware';
 
 @Module({
   imports: [
@@ -31,6 +37,7 @@ import { TelegramModule } from './modules/telegram/telegram.module';
     // Infrastructure
     PrismaModule,
     QueueModule,
+    CacheModule,
     LoggerModule,
 
     // Platform
@@ -46,6 +53,12 @@ import { TelegramModule } from './modules/telegram/telegram.module';
     DistributionModule,
     AiModule,
     TelegramModule,
+    AdminModule,
+    RiskModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(DevAuthMiddleware).forRoutes('admin/*path');
+  }
+}

@@ -66,6 +66,7 @@ describe('ProxyChatSessionService', () => {
   let contactLeakGuard: jest.Mocked<ContactLeakGuard>;
   let chatPermission: jest.Mocked<ChatPermissionService>;
   let chatAuditLog: jest.Mocked<ChatAuditLogService>;
+  let riskService: { create: jest.Mock };
 
   beforeEach(() => {
     prisma = createMockPrisma();
@@ -73,12 +74,14 @@ describe('ProxyChatSessionService', () => {
     contactLeakGuard = createMockContactLeakGuard();
     chatPermission = createMockChatPermission();
     chatAuditLog = createMockChatAuditLog();
+    riskService = { create: jest.fn().mockResolvedValue({ id: 'risk-1' }) };
     service = new ProxyChatSessionService(
       prisma as any,
       proxyChatService as any,
       contactLeakGuard as any,
       chatPermission as any,
       chatAuditLog as any,
+      riskService as any,
     );
   });
 

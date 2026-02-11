@@ -158,20 +158,20 @@ export class BookingCallbackHandler {
       };
     }
 
-    // Auto-chain: MANAGER_VERIFIED → PAYMENT_PENDING
-    const paymentResult = await this.stateMachine.transition(
+    // Auto-chain: MANAGER_VERIFIED → MEETING_SCHEDULED
+    const meetingResult = await this.stateMachine.transition(
       bookingId,
-      BookingStatus.PAYMENT_PENDING,
+      BookingStatus.MEETING_SCHEDULED,
       { triggeredBy: actorUserId },
     );
 
     return {
-      text: paymentResult.success
-        ? 'Booking verified. Payment instructions sent to traveler.'
+      text: meetingResult.success
+        ? 'Booking verified. Meeting scheduling initiated.'
         : 'Booking verified.',
       notifications: [
         ...verifyResult.notifications,
-        ...paymentResult.notifications,
+        ...meetingResult.notifications,
       ],
     };
   }

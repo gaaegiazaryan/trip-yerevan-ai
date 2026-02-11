@@ -223,6 +223,10 @@ export class BookingAcceptanceService {
           travelRequestId: offer.travelRequestId,
         };
       }
+      this.logger.error(
+        `[booking] action=create_failed, offerId=${offerId}, userId=${userId}, error=${error}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       throw error;
     }
 
@@ -230,12 +234,28 @@ export class BookingAcceptanceService {
       `[booking] action=created, bookingId=${bookingId}, offerId=${offerId}, userId=${userId}, agencyId=${offer.agency.id}`,
     );
 
-    // Transition CREATED → AWAITING_AGENCY_CONFIRMATION via state machine
-    const smResult = await this.stateMachine.transition(
-      bookingId,
-      BookingStatus.AWAITING_AGENCY_CONFIRMATION,
-      { triggeredBy: userId },
-    );
+    // Transition CREATED → AWAITING_AGENCY_CONFIRMATION via state machine.
+    // Wrapped in try/catch: booking creation is the critical path — if the
+    // state machine fails (e.g. Redis down, BullMQ unavailable) the user
+    // should still be told the booking was created. The error is logged for
+    // manual intervention.
+    let smResult: { success: boolean; notifications: BookingNotification[] } = {
+      success: false,
+      notifications: [],
+    };
+    try {
+      smResult = await this.stateMachine.transition(
+        bookingId,
+        BookingStatus.AWAITING_AGENCY_CONFIRMATION,
+        { triggeredBy: userId },
+      );
+    } catch (smError) {
+      this.logger.error(
+        `[booking] CRITICAL: State machine transition failed after booking creation. ` +
+          `bookingId=${bookingId}, offerId=${offerId}, userId=${userId}, error=${smError}`,
+        smError instanceof Error ? smError.stack : undefined,
+      );
+    }
 
     // Build traveler confirmation notification
     const price = Number(offer.totalPrice).toLocaleString('en-US');

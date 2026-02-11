@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { BookingStatus, Prisma } from '@prisma/client';
+import { BookingStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
 import {
   VALID_BOOKING_TRANSITIONS,
   STATUS_TIMESTAMP_MAP,
@@ -37,7 +37,7 @@ export interface TransitionContext {
 /** Shape returned by the booking query with relations needed for notifications */
 type BookingWithRelations = Prisma.BookingGetPayload<{
   include: {
-    user: { select: { telegramId: true } };
+    user: { select: { telegramId: true; firstName: true; lastName: true } };
     agency: {
       select: {
         name: true;
@@ -49,7 +49,15 @@ type BookingWithRelations = Prisma.BookingGetPayload<{
     };
     offer: {
       select: {
-        travelRequest: { select: { destination: true } };
+        hotelName: true;
+        departureDate: true;
+        returnDate: true;
+        nightsCount: true;
+        adults: true;
+        description: true;
+        travelRequest: {
+          select: { destination: true; adults: true; children: true };
+        };
         membership: { select: { user: { select: { telegramId: true } } } };
       };
     };
@@ -107,9 +115,11 @@ export class BookingStateMachineService {
       };
     }
 
-    // Atomic: update booking + create event
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const b = await tx.booking.update({
+    // Atomic: update status + create audit event (minimal writes only).
+    // Deep relation loading is done OUTSIDE the transaction to avoid
+    // Neon serverless cold-start timeouts (default 5 s).
+    await this.prisma.$transaction(async (tx) => {
+      await tx.booking.update({
         where: { id: bookingId },
         data: {
           status: toStatus,
@@ -118,27 +128,6 @@ export class BookingStateMachineService {
           ...(toStatus === BookingStatus.CANCELLED && ctx.reason
             ? { cancelReason: ctx.reason }
             : {}),
-        },
-        include: {
-          user: { select: { telegramId: true } },
-          agency: {
-            select: {
-              name: true,
-              agencyTelegramChatId: true,
-              memberships: {
-                where: { status: 'ACTIVE' },
-                select: { user: { select: { telegramId: true } } },
-              },
-            },
-          },
-          offer: {
-            select: {
-              travelRequest: { select: { destination: true } },
-              membership: {
-                select: { user: { select: { telegramId: true } } },
-              },
-            },
-          },
         },
       });
 
@@ -154,9 +143,17 @@ export class BookingStateMachineService {
             : undefined,
         },
       });
-
-      return b;
     });
+
+    // Load full relations for notification building (outside transaction)
+    const updated = await this.loadBooking(bookingId);
+    if (!updated) {
+      // Should never happen — booking was just updated
+      this.logger.error(
+        `[booking-sm] Booking disappeared after transition, bookingId=${bookingId}`,
+      );
+      return { success: true, notifications: [] };
+    }
 
     this.logger.log(
       `[booking-sm] transition=${fromStatus}→${toStatus}, bookingId=${bookingId}, triggeredBy=${ctx.triggeredBy ?? 'SYSTEM'}`,
@@ -173,7 +170,7 @@ export class BookingStateMachineService {
       await this.cancelExpiration(bookingId);
     }
 
-    const notifications = this.buildNotifications(
+    const notifications = await this.buildNotifications(
       updated,
       fromStatus,
       toStatus,
@@ -200,7 +197,7 @@ export class BookingStateMachineService {
     return this.prisma.booking.findUnique({
       where: { id: bookingId },
       include: {
-        user: { select: { telegramId: true } },
+        user: { select: { telegramId: true, firstName: true, lastName: true } },
         agency: {
           select: {
             name: true,
@@ -213,7 +210,15 @@ export class BookingStateMachineService {
         },
         offer: {
           select: {
-            travelRequest: { select: { destination: true } },
+            hotelName: true,
+            departureDate: true,
+            returnDate: true,
+            nightsCount: true,
+            adults: true,
+            description: true,
+            travelRequest: {
+              select: { destination: true, adults: true, children: true },
+            },
             membership: {
               select: { user: { select: { telegramId: true } } },
             },
@@ -275,14 +280,101 @@ export class BookingStateMachineService {
   }
 
   // -----------------------------------------------------------------------
+  // Manager verification summary
+  // -----------------------------------------------------------------------
+
+  private buildManagerVerificationSummary(
+    booking: BookingWithRelations,
+    shortId: string,
+  ): string {
+    const dest =
+      booking.offer.travelRequest.destination ?? 'N/A';
+    const agencyName = booking.agency.name;
+    const price = Number(booking.totalPrice).toLocaleString('en-US');
+    const currency = booking.currency;
+
+    // Traveler info
+    const travelerName = [booking.user.firstName, booking.user.lastName]
+      .filter(Boolean)
+      .join(' ') || 'N/A';
+    const tr = booking.offer.travelRequest;
+    const travelers = tr.children
+      ? `${tr.adults} adults, ${tr.children} children`
+      : `${tr.adults} adults`;
+
+    // Travel dates
+    const offer = booking.offer;
+    const depDate = offer.departureDate
+      ? new Date(offer.departureDate).toLocaleDateString('en-GB')
+      : 'N/A';
+    const retDate = offer.returnDate
+      ? new Date(offer.returnDate).toLocaleDateString('en-GB')
+      : 'N/A';
+    const nights = offer.nightsCount ? `${offer.nightsCount} nights` : '';
+
+    // Hotel
+    const hotel = offer.hotelName ?? 'Not specified';
+
+    const lines = [
+      `\ud83d\udccb *Booking Verification Required*`,
+      ``,
+      `*Booking:* \`${shortId}...\``,
+      ``,
+      `\ud83d\udc64 *Traveler*`,
+      `Name: ${travelerName}`,
+      `Group: ${travelers}`,
+      ``,
+      `\ud83c\udf0d *Trip Details*`,
+      `Destination: ${dest}`,
+      `Dates: ${depDate} — ${retDate}${nights ? ` (${nights})` : ''}`,
+      `Hotel: ${hotel}`,
+      ``,
+      `\ud83c\udfe2 *Agency*`,
+      `Name: ${agencyName}`,
+      ``,
+      `\ud83d\udcb0 *Price*`,
+      `${price} ${currency}`,
+    ];
+
+    return lines.join('\n');
+  }
+
+  // -----------------------------------------------------------------------
+  // Manager resolution: query real MANAGER users from DB
+  // -----------------------------------------------------------------------
+
+  private async getManagerChatIds(): Promise<number[]> {
+    const managers = await this.prisma.user.findMany({
+      where: {
+        role: UserRole.MANAGER,
+        status: UserStatus.ACTIVE,
+      },
+      select: { telegramId: true },
+    });
+
+    const chatIds = managers.map((m) => Number(m.telegramId));
+
+    this.logger.log(
+      `[booking-sm] Found ${chatIds.length} active manager(s): [${chatIds.join(', ')}]`,
+    );
+
+    // Include the channel group as fallback (if configured and not already covered)
+    if (this.managerChannelChatId && !chatIds.includes(this.managerChannelChatId)) {
+      chatIds.push(this.managerChannelChatId);
+    }
+
+    return chatIds;
+  }
+
+  // -----------------------------------------------------------------------
   // Notification builder
   // -----------------------------------------------------------------------
 
-  private buildNotifications(
+  private async buildNotifications(
     booking: BookingWithRelations,
     _fromStatus: BookingStatus,
     toStatus: BookingStatus,
-  ): BookingNotification[] {
+  ): Promise<BookingNotification[]> {
     const notifications: BookingNotification[] = [];
     const shortId = booking.id.slice(0, 8);
     const dest =
@@ -298,6 +390,18 @@ export class BookingStateMachineService {
     const agencyGroupChatId = booking.agency.agencyTelegramChatId
       ? Number(booking.agency.agencyTelegramChatId)
       : null;
+
+    // Resolve manager chat IDs for statuses that need manager notification
+    const managerStatuses: BookingStatus[] = [
+      BookingStatus.AGENCY_CONFIRMED,
+      BookingStatus.MEETING_SCHEDULED,
+      BookingStatus.PAID,
+      BookingStatus.CANCELLED,
+      BookingStatus.REJECTED_BY_AGENCY,
+    ];
+    const managerChatIds = managerStatuses.includes(toStatus)
+      ? await this.getManagerChatIds()
+      : [];
 
     switch (toStatus) {
       case BookingStatus.AWAITING_AGENCY_CONFIRMATION:
@@ -344,26 +448,25 @@ export class BookingStateMachineService {
             `*${agencyName}* has confirmed your booking \`${shortId}...\`\n` +
             `Our manager will verify and send payment details shortly.`,
         });
-        if (this.managerChannelChatId) {
-          notifications.push({
-            chatId: this.managerChannelChatId,
-            text:
-              `\u2705 *Agency Confirmed Booking*\n\n` +
-              `*Destination:* ${dest}\n` +
-              `*Agency:* ${agencyName}\n` +
-              `*Price:* ${price} ${currency}\n` +
-              `*Booking:* \`${shortId}...\``,
-            buttons: [
-              {
-                label: '\u2705 Verify',
-                callbackData: `bk:verify:${booking.id}`,
-              },
-              {
-                label: '\u274c Cancel',
-                callbackData: `bk:cancel:${booking.id}`,
-              },
-            ],
-          });
+        {
+          const summaryText = this.buildManagerVerificationSummary(booking, shortId);
+          const verifyButtons = [
+            {
+              label: '\u2705 Verify',
+              callbackData: `bk:verify:${booking.id}`,
+            },
+            {
+              label: '\u274c Cancel',
+              callbackData: `bk:cancel:${booking.id}`,
+            },
+          ];
+          for (const mgrChatId of managerChatIds) {
+            notifications.push({
+              chatId: mgrChatId,
+              text: summaryText,
+              buttons: verifyButtons,
+            });
+          }
         }
         break;
 
@@ -378,6 +481,42 @@ export class BookingStateMachineService {
           chatId: agentChatId,
           text: `\u2705 Booking \`${shortId}...\` has been verified by the manager.`,
         });
+        break;
+
+      case BookingStatus.MEETING_SCHEDULED:
+        notifications.push({
+          chatId: travelerChatId,
+          text:
+            `\ud83d\udcc5 *Meeting Scheduling*\n\n` +
+            `Your booking \`${shortId}...\` is verified!\n` +
+            `Please propose a convenient meeting time and location.`,
+          buttons: [
+            {
+              label: '\ud83d\udcc5 Propose Meeting',
+              callbackData: `mpw:start:${booking.id}`,
+            },
+          ],
+        });
+        {
+          const meetingText =
+            `\ud83d\udcc5 *Meeting Scheduling*\n\n` +
+            `Booking \`${shortId}...\` is ready for a meeting.\n` +
+            `*Destination:* ${dest}\n` +
+            `*Price:* ${price} ${currency}\n\n` +
+            `Waiting for traveler to propose meeting details.`;
+          for (const mgrChatId of managerChatIds) {
+            notifications.push({
+              chatId: mgrChatId,
+              text: meetingText,
+              buttons: [
+                {
+                  label: '\u274c Cancel Booking',
+                  callbackData: `bk:cancel:${booking.id}`,
+                },
+              ],
+            });
+          }
+        }
         break;
 
       case BookingStatus.PAYMENT_PENDING:
@@ -396,20 +535,24 @@ export class BookingStateMachineService {
           chatId: agentChatId,
           text: `\ud83d\udcb0 Payment received for booking \`${shortId}...\` — ${price} ${currency}.`,
         });
-        if (this.managerChannelChatId) {
-          notifications.push({
-            chatId: this.managerChannelChatId,
-            text:
-              `\ud83d\udcb0 *Payment Confirmed*\n\n` +
-              `*Booking:* \`${shortId}...\`\n` +
-              `*Amount:* ${price} ${currency}`,
-            buttons: [
-              {
-                label: '\ud83d\ude80 Start trip',
-                callbackData: `bk:start:${booking.id}`,
-              },
-            ],
-          });
+        {
+          const paidText =
+            `\ud83d\udcb0 *Payment Confirmed*\n\n` +
+            `*Booking:* \`${shortId}...\`\n` +
+            `*Amount:* ${price} ${currency}`;
+          const paidButtons = [
+            {
+              label: '\ud83d\ude80 Start trip',
+              callbackData: `bk:start:${booking.id}`,
+            },
+          ];
+          for (const mgrChatId of managerChatIds) {
+            notifications.push({
+              chatId: mgrChatId,
+              text: paidText,
+              buttons: paidButtons,
+            });
+          }
         }
         break;
 
@@ -441,11 +584,8 @@ export class BookingStateMachineService {
             `Booking \`${shortId}...\` has been cancelled.`;
           notifications.push({ chatId: travelerChatId, text: cancelText });
           notifications.push({ chatId: agentChatId, text: cancelText });
-          if (this.managerChannelChatId) {
-            notifications.push({
-              chatId: this.managerChannelChatId,
-              text: cancelText,
-            });
+          for (const mgrChatId of managerChatIds) {
+            notifications.push({ chatId: mgrChatId, text: cancelText });
           }
         }
         break;
@@ -474,14 +614,14 @@ export class BookingStateMachineService {
             `Unfortunately, *${agencyName}* was unable to confirm booking \`${shortId}...\`\n` +
             `You can try accepting another offer.`,
         });
-        if (this.managerChannelChatId) {
-          notifications.push({
-            chatId: this.managerChannelChatId,
-            text:
-              `\u274c *Booking Rejected by Agency*\n\n` +
-              `*Agency:* ${agencyName}\n` +
-              `*Booking:* \`${shortId}...\``,
-          });
+        {
+          const rejectedText =
+            `\u274c *Booking Rejected by Agency*\n\n` +
+            `*Agency:* ${agencyName}\n` +
+            `*Booking:* \`${shortId}...\``;
+          for (const mgrChatId of managerChatIds) {
+            notifications.push({ chatId: mgrChatId, text: rejectedText });
+          }
         }
         break;
     }
