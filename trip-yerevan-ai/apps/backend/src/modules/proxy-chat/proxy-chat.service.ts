@@ -1,12 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
 import {
+  CloseReason,
   MessageContentType,
   MessageSenderType,
   ProxyChat,
   ProxyChatMessage,
-  ProxyChatStatus,
+  ProxyChatState,
 } from '@prisma/client';
+import { VALID_TRANSITIONS } from './proxy-chat.constants';
 
 @Injectable()
 export class ProxyChatService {
@@ -54,38 +56,46 @@ export class ProxyChatService {
     contentType: MessageContentType = MessageContentType.TEXT,
     telegramFileId?: string,
   ): Promise<ProxyChatMessage> {
+    const now = new Date();
     const [msg] = await this.prisma.$transaction([
       this.prisma.proxyChatMessage.create({
         data: { proxyChatId, senderType, senderId, content, contentType, telegramFileId },
       }),
       this.prisma.proxyChat.update({
         where: { id: proxyChatId },
-        data: { lastActivityAt: new Date() },
+        data: { lastActivityAt: now, lastMessageAt: now, lastMessageBy: senderId },
       }),
     ]);
     return msg;
   }
 
-  async close(id: string, closedReason?: string): Promise<ProxyChat> {
+  async close(id: string, closeReason?: CloseReason): Promise<ProxyChat> {
     return this.prisma.proxyChat.update({
       where: { id },
       data: {
-        status: ProxyChatStatus.CLOSED,
+        state: ProxyChatState.CLOSED,
         closedAt: new Date(),
-        closedReason: closedReason ?? null,
+        closeReason: closeReason ?? null,
       },
     });
   }
 
-  async updateStatus(
+  async transitionState(
     id: string,
-    status: ProxyChatStatus,
-    closedReason?: string,
+    toState: ProxyChatState,
+    closeReason?: CloseReason,
   ): Promise<ProxyChat> {
-    const data: Record<string, unknown> = { status };
-    if (status === ProxyChatStatus.CLOSED) {
+    const chat = await this.prisma.proxyChat.findUniqueOrThrow({ where: { id } });
+    const allowed = VALID_TRANSITIONS[chat.state];
+    if (!allowed?.includes(toState)) {
+      throw new Error(
+        `Invalid state transition: ${chat.state} → ${toState}`,
+      );
+    }
+    const data: Record<string, unknown> = { state: toState };
+    if (toState === ProxyChatState.CLOSED) {
       data.closedAt = new Date();
-      data.closedReason = closedReason ?? null;
+      data.closeReason = closeReason ?? null;
     }
     return this.prisma.proxyChat.update({ where: { id }, data });
   }
@@ -93,7 +103,7 @@ export class ProxyChatService {
   async assignManager(id: string, managerId: string): Promise<ProxyChat> {
     return this.prisma.proxyChat.update({
       where: { id },
-      data: { managerId, status: ProxyChatStatus.MANAGER_ASSIGNED },
+      data: { managerId, state: ProxyChatState.ESCALATED },
     });
   }
 
@@ -106,7 +116,7 @@ export class ProxyChatService {
   async findInactiveChats(inactiveSince: Date): Promise<ProxyChat[]> {
     return this.prisma.proxyChat.findMany({
       where: {
-        status: { in: [ProxyChatStatus.OPEN, ProxyChatStatus.BOOKED] },
+        state: { in: [ProxyChatState.OPEN, ProxyChatState.REPLY_ONLY] },
         messages: {
           none: { createdAt: { gte: inactiveSince } },
         },
@@ -114,15 +124,16 @@ export class ProxyChatService {
     });
   }
 
-  async reopen(id: string): Promise<ProxyChat> {
+  async reopen(id: string, offerId?: string): Promise<ProxyChat> {
     return this.prisma.proxyChat.update({
       where: { id },
       data: {
-        status: ProxyChatStatus.OPEN,
+        state: ProxyChatState.OPEN,
         closedAt: null,
-        closedReason: null,
+        closeReason: null,
         reopenedAt: new Date(),
         lastActivityAt: new Date(),
+        ...(offerId && { offerId }),
       },
     });
   }

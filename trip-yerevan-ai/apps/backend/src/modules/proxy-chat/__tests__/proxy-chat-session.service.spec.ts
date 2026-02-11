@@ -3,7 +3,7 @@ import { ProxyChatService } from '../proxy-chat.service';
 import { ContactLeakGuard } from '../contact-leak-guard';
 import { ChatPermissionService } from '../chat-permission.service';
 import { ChatAuditLogService } from '../chat-audit-log.service';
-import { MessageContentType, MessageSenderType, ProxyChatStatus } from '@prisma/client';
+import { MessageContentType, MessageSenderType, ProxyChatState } from '@prisma/client';
 
 function createMockPrisma() {
   return {
@@ -18,6 +18,7 @@ function createMockProxyChatService() {
     create: jest.fn(),
     sendMessage: jest.fn(),
     close: jest.fn(),
+    reopen: jest.fn(),
   } as unknown as jest.Mocked<ProxyChatService>;
 }
 
@@ -95,13 +96,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -122,13 +129,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -153,13 +166,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -168,7 +187,7 @@ describe('ProxyChatSessionService', () => {
       expect(result.proxyChatId).toBe('pc-existing');
     });
 
-    it('should reopen closed proxy chat', async () => {
+    it('should reopen closed proxy chat via service', async () => {
       prisma.offer.findUnique.mockResolvedValue(makeOffer());
       proxyChatService.findByParticipants.mockResolvedValue({
         id: 'pc-closed',
@@ -176,35 +195,45 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.CLOSED,
-        closedReason: null,
+        state: ProxyChatState.CLOSED,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: new Date(),
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
-      prisma.proxyChat.update.mockResolvedValue({
+      proxyChatService.reopen.mockResolvedValue({
         id: 'pc-closed',
-        status: ProxyChatStatus.OPEN,
+        state: ProxyChatState.OPEN,
         travelRequestId: TR_ID,
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
+        closeReason: null,
+        managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
-        reopenedAt: null,
-      });
+        reopenedAt: new Date(),
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
+      } as any);
 
       const result = await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
 
-      expect(prisma.proxyChat.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'pc-closed' },
-          data: expect.objectContaining({ status: ProxyChatStatus.OPEN }),
-        }),
-      );
+      expect(proxyChatService.reopen).toHaveBeenCalledWith('pc-closed', OFFER_ID);
+      expect(prisma.proxyChat.update).not.toHaveBeenCalled();
       expect(result.proxyChatId).toBe('pc-closed');
     });
 
@@ -242,13 +271,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -269,13 +304,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
     });
@@ -326,13 +367,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -357,7 +404,7 @@ describe('ProxyChatSessionService', () => {
     it('should return error for closed chat', async () => {
       prisma.proxyChat.findUnique.mockResolvedValue({
         id: 'pc-1',
-        status: ProxyChatStatus.CLOSED,
+        state: ProxyChatState.CLOSED,
         user: { id: OWNER_USER_ID, telegramId: BigInt(12345) },
         agency: {
           id: AGENCY_ID,
@@ -376,7 +423,7 @@ describe('ProxyChatSessionService', () => {
     it('should reject unauthorized agent', async () => {
       prisma.proxyChat.findUnique.mockResolvedValue({
         id: 'pc-1',
-        status: ProxyChatStatus.OPEN,
+        state: ProxyChatState.OPEN,
         user: { id: OWNER_USER_ID, telegramId: BigInt(12345) },
         agency: {
           id: AGENCY_ID,
@@ -401,7 +448,7 @@ describe('ProxyChatSessionService', () => {
     it('should create session for authorized agent', async () => {
       prisma.proxyChat.findUnique.mockResolvedValue({
         id: 'pc-1',
-        status: ProxyChatStatus.OPEN,
+        state: ProxyChatState.OPEN,
         user: { id: OWNER_USER_ID, telegramId: BigInt(12345) },
         agency: {
           id: AGENCY_ID,
@@ -438,13 +485,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -473,13 +526,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -502,13 +561,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -528,13 +593,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
@@ -549,8 +620,143 @@ describe('ProxyChatSessionService', () => {
     });
   });
 
-  describe('setLastForwardedMsgId', () => {
-    it('should store last forwarded message ID on session', async () => {
+  describe('startReply (role-auto-detection)', () => {
+    const TRAVELER_TELEGRAM_ID = BigInt(12345);
+    const PROXY_CHAT_ID = 'pc-1';
+
+    function makeProxyChat(overrides: Record<string, unknown> = {}) {
+      return {
+        id: PROXY_CHAT_ID,
+        state: ProxyChatState.OPEN,
+        travelRequestId: TR_ID,
+        offerId: OFFER_ID,
+        user: { id: OWNER_USER_ID, telegramId: TRAVELER_TELEGRAM_ID },
+        agency: {
+          id: AGENCY_ID,
+          name: 'TravelCo',
+          agencyTelegramChatId: null,
+          memberships: [
+            { userId: 'agent-user-001', user: { telegramId: AGENT_TELEGRAM_ID } },
+          ],
+        },
+        offer: { id: OFFER_ID },
+        ...overrides,
+      };
+    }
+
+    it('should create traveler session when user is the traveler', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(makeProxyChat());
+
+      const result = await service.startReply(
+        12345,
+        PROXY_CHAT_ID,
+        OWNER_USER_ID,
+        TRAVELER_TELEGRAM_ID,
+      );
+
+      expect(result.proxyChatId).toBe(PROXY_CHAT_ID);
+      expect(result.text).toContain('TravelCo');
+      expect(service.hasActiveSession(12345)).toBe(true);
+
+      const session = service.getSession(12345);
+      expect(session?.senderType).toBe(MessageSenderType.USER);
+      expect(session?.counterpartChatIds).toContain(Number(AGENT_TELEGRAM_ID));
+    });
+
+    it('should create agency session when user is an agency member', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(makeProxyChat());
+
+      const result = await service.startReply(
+        99999,
+        PROXY_CHAT_ID,
+        'agent-user-001',
+        AGENT_TELEGRAM_ID,
+      );
+
+      expect(result.proxyChatId).toBe(PROXY_CHAT_ID);
+      expect(result.text).toContain('replying');
+      expect(service.hasActiveSession(99999)).toBe(true);
+
+      const session = service.getSession(99999);
+      expect(session?.senderType).toBe(MessageSenderType.AGENCY);
+      expect(session?.counterpartChatIds).toContain(Number(TRAVELER_TELEGRAM_ID));
+    });
+
+    it('should reject user who is neither traveler nor agency member', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(makeProxyChat());
+
+      const result = await service.startReply(
+        55555,
+        PROXY_CHAT_ID,
+        'random-user',
+        BigInt(55555),
+      );
+
+      expect(result.text).toContain('not a participant');
+      expect(result.proxyChatId).toBeUndefined();
+      expect(service.hasActiveSession(55555)).toBe(false);
+    });
+
+    it('should return error for closed chat', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(
+        makeProxyChat({ state: ProxyChatState.CLOSED }),
+      );
+
+      const result = await service.startReply(
+        12345,
+        PROXY_CHAT_ID,
+        OWNER_USER_ID,
+        TRAVELER_TELEGRAM_ID,
+      );
+
+      expect(result.text).toContain('closed');
+      expect(result.proxyChatId).toBeUndefined();
+    });
+
+    it('should return error for non-existent chat', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(null);
+
+      const result = await service.startReply(
+        12345,
+        'bad-id',
+        OWNER_USER_ID,
+        TRAVELER_TELEGRAM_ID,
+      );
+
+      expect(result.text).toContain('not found');
+    });
+
+    it('should include agency group chat in traveler counterparts', async () => {
+      prisma.proxyChat.findUnique.mockResolvedValue(
+        makeProxyChat({
+          agency: {
+            id: AGENCY_ID,
+            name: 'TravelCo',
+            agencyTelegramChatId: BigInt(77777),
+            memberships: [
+              { userId: 'agent-user-001', user: { telegramId: AGENT_TELEGRAM_ID } },
+            ],
+          },
+        }),
+      );
+
+      const result = await service.startReply(
+        12345,
+        PROXY_CHAT_ID,
+        OWNER_USER_ID,
+        TRAVELER_TELEGRAM_ID,
+      );
+
+      expect(result.proxyChatId).toBe(PROXY_CHAT_ID);
+      const session = service.getSession(12345);
+      expect(session?.counterpartChatIds).toContain(Number(AGENT_TELEGRAM_ID));
+      expect(session?.counterpartChatIds).toContain(77777);
+    });
+  });
+
+  describe('traveler → agency → traveler reply flow', () => {
+    it('should allow full conversation turn cycle', async () => {
+      // Step 1: Traveler starts chat
       prisma.offer.findUnique.mockResolvedValue(makeOffer());
       proxyChatService.findByParticipants.mockResolvedValue(null);
       proxyChatService.create.mockResolvedValue({
@@ -559,24 +765,66 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);
-      expect(service.getSession(12345)?.lastReceivedForwardedMsgId).toBeUndefined();
+      expect(service.getSession(12345)?.senderType).toBe(MessageSenderType.USER);
 
-      service.setLastForwardedMsgId(12345, 999);
-      expect(service.getSession(12345)?.lastReceivedForwardedMsgId).toBe(999);
-    });
+      // Step 2: Traveler sends message → OK
+      proxyChatService.sendMessage.mockResolvedValue({} as any);
+      const msg1 = await service.handleMessage(12345, 'Is visa included?');
+      expect(msg1.targets).toHaveLength(1);
+      expect(msg1.blocked).toBeUndefined();
 
-    it('should be a no-op for unknown chat', () => {
-      expect(() => service.setLastForwardedMsgId(99999, 100)).not.toThrow();
+      // Step 3: Agency starts reply via startReply
+      prisma.proxyChat.findUnique.mockResolvedValue({
+        id: 'pc-1',
+        state: ProxyChatState.OPEN,
+        travelRequestId: TR_ID,
+        offerId: OFFER_ID,
+        user: { id: OWNER_USER_ID, telegramId: BigInt(12345) },
+        agency: {
+          id: AGENCY_ID,
+          name: 'TravelCo',
+          agencyTelegramChatId: null,
+          memberships: [
+            { userId: 'agent-user-001', user: { telegramId: AGENT_TELEGRAM_ID } },
+          ],
+        },
+        offer: { id: OFFER_ID },
+      });
+
+      const agencyResult = await service.startReply(
+        99999,
+        'pc-1',
+        'agent-user-001',
+        AGENT_TELEGRAM_ID,
+      );
+      expect(agencyResult.proxyChatId).toBe('pc-1');
+      expect(service.getSession(99999)?.senderType).toBe(MessageSenderType.AGENCY);
+
+      // Step 4: Agency sends message → OK
+      const msg2 = await service.handleMessage(99999, 'Yes, visa is included.');
+      expect(msg2.targets).toHaveLength(1);
+      expect(msg2.blocked).toBeUndefined();
+
+      // Step 5: Traveler replies again → OK (session still active)
+      const msg3 = await service.handleMessage(12345, 'Great, thank you!');
+      expect(msg3.targets).toHaveLength(1);
+      expect(msg3.blocked).toBeUndefined();
     });
   });
 
@@ -590,13 +838,19 @@ describe('ProxyChatSessionService', () => {
         userId: OWNER_USER_ID,
         agencyId: AGENCY_ID,
         offerId: OFFER_ID,
-        status: ProxyChatStatus.OPEN,
-        closedReason: null,
+        state: ProxyChatState.OPEN,
+        closeReason: null,
         managerId: null,
         createdAt: new Date(),
         closedAt: null,
         lastActivityAt: new Date(),
         reopenedAt: null,
+        lastMessageAt: null,
+        lastMessageBy: null,
+        replyWindowUntil: null,
+        policyVersion: 'v1',
+        riskScore: 0,
+        channel: 'TELEGRAM',
       });
 
       await service.startTravelerChat(12345, OFFER_ID, OWNER_USER_ID);

@@ -1,18 +1,17 @@
 import {
   MessageContentType,
   MessageSenderType,
-  ProxyChatStatus,
+  ProxyChatState,
 } from '@prisma/client';
 
 type Language = 'RU' | 'AM' | 'EN';
 
-const STATUS_LABELS: Record<ProxyChatStatus, Record<Language, string>> = {
+const STATE_LABELS: Record<ProxyChatState, Record<Language, string>> = {
   OPEN: { RU: '🟢 ОТКРЫТ', AM: '🟢 OPEN', EN: '🟢 OPEN' },
-  BOOKED: { RU: '📋 ЗАБРОНИРОВАНО', AM: '📋 BOOKED', EN: '📋 BOOKED' },
-  MANAGER_ASSIGNED: { RU: '👤 МЕНЕДЖЕР', AM: '👤 MANAGER', EN: '👤 MANAGER' },
-  COMPLETED: { RU: '✅ ЗАВЕРШЕНО', AM: '✅ COMPLETED', EN: '✅ COMPLETED' },
+  REPLY_ONLY: { RU: '📋 ТОЛЬКО ОТВЕТ', AM: '📋 REPLY ONLY', EN: '📋 REPLY ONLY' },
+  PAUSED: { RU: '⏸ ПАУЗА', AM: '⏸ PAUSED', EN: '⏸ PAUSED' },
+  ESCALATED: { RU: '👤 МЕНЕДЖЕР', AM: '👤 ESCALATED', EN: '👤 ESCALATED' },
   CLOSED: { RU: '🔴 ЗАКРЫТ', AM: '🔴 CLOSED', EN: '🔴 CLOSED' },
-  ARCHIVED: { RU: '📁 АРХИВ', AM: '📁 ARCHIVED', EN: '📁 ARCHIVED' },
 };
 
 export interface FormatMessageParams {
@@ -21,13 +20,13 @@ export interface FormatMessageParams {
   isManager: boolean;
   content: string;
   contentType: MessageContentType;
-  chatStatus: ProxyChatStatus;
+  chatState: ProxyChatState;
   agencyName: string;
   language?: Language;
 }
 
 /**
- * Formats a forwarded proxy-chat message with a status header.
+ * Formats a forwarded proxy-chat message with a state header.
  *
  * Output:
  * ```
@@ -39,7 +38,7 @@ export interface FormatMessageParams {
  */
 export function formatForwardedMessage(params: FormatMessageParams): string {
   const lang = params.language ?? 'EN';
-  const statusLabel = STATUS_LABELS[params.chatStatus]?.[lang] ?? STATUS_LABELS[params.chatStatus]?.EN ?? '🟢 OPEN';
+  const stateLabel = STATE_LABELS[params.chatState]?.[lang] ?? STATE_LABELS[params.chatState]?.EN ?? '🟢 OPEN';
 
   const senderPrefix =
     params.senderType === MessageSenderType.USER
@@ -55,5 +54,5 @@ export function formatForwardedMessage(params: FormatMessageParams): string {
         ? '[Photo]'
         : '[Document]';
 
-  return `${statusLabel} | ${params.agencyName}\n━━━━━━━━━━━━━━━━━\n${senderPrefix}\n${body}`;
+  return `${stateLabel} | ${params.agencyName}\n━━━━━━━━━━━━━━━━━\n${senderPrefix}\n${body}`;
 }

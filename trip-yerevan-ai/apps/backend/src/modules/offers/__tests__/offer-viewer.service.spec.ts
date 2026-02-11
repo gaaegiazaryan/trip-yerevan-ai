@@ -422,7 +422,7 @@ describe('OfferViewerService', () => {
       expect(result.buttons[0].callbackData).toBe(`offers:b:${TRAVEL_REQUEST_ID}`);
       expect(result.buttons[0].label).toContain('Back to offers');
       expect(result.buttons[1].callbackData).toBe(`offers:ask:${OFFER_ID_1}`);
-      expect(result.buttons[1].label).toContain('Ask question');
+      expect(result.buttons[1].label).toContain('Ask manager');
       expect(result.buttons[2].callbackData).toBe(`offers:accept:${OFFER_ID_1}`);
       expect(result.buttons[2].label).toContain('Accept offer');
     });

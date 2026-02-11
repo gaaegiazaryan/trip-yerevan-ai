@@ -24,6 +24,16 @@ function createMockConfig() {
   };
 }
 
+function createMockStateMachine() {
+  return {
+    transition: jest.fn().mockResolvedValue({
+      success: true,
+      notifications: [],
+      booking: { id: 'booking-transitioned' },
+    }),
+  };
+}
+
 const OWNER_USER_ID = 'user-owner-001';
 const OTHER_USER_ID = 'user-other-002';
 const OFFER_ID = 'offer-001';
@@ -61,11 +71,13 @@ describe('BookingAcceptanceService', () => {
   let service: BookingAcceptanceService;
   let prisma: ReturnType<typeof createMockPrisma>;
   let config: ReturnType<typeof createMockConfig>;
+  let stateMachine: ReturnType<typeof createMockStateMachine>;
 
   beforeEach(() => {
     prisma = createMockPrisma();
     config = createMockConfig();
-    service = new BookingAcceptanceService(prisma as any, config as any);
+    stateMachine = createMockStateMachine();
+    service = new BookingAcceptanceService(prisma as any, config as any, stateMachine as any);
   });
 
   describe('showConfirmation', () => {
@@ -196,7 +208,7 @@ describe('BookingAcceptanceService', () => {
     it('should include manager channel notification when ENV is set', async () => {
       config.get.mockReturnValue('77777');
       // Recreate service with manager channel configured
-      service = new BookingAcceptanceService(prisma as any, config as any);
+      service = new BookingAcceptanceService(prisma as any, config as any, stateMachine as any);
 
       prisma.offer.findUnique.mockResolvedValue(makeOffer());
       prisma.$transaction.mockImplementation(async (fn: any) => {
@@ -288,7 +300,7 @@ describe('BookingAcceptanceService', () => {
           data: expect.objectContaining({
             offerId: OFFER_ID,
             userId: OWNER_USER_ID,
-            status: BookingStatus.PENDING_CONFIRMATION,
+            status: BookingStatus.CREATED,
           }),
         }),
       );

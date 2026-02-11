@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { Booking, BookingStatus, Currency } from '@prisma/client';
+import { Booking, Currency } from '@prisma/client';
 
 @Injectable()
 export class BookingsService {
@@ -9,7 +9,7 @@ export class BookingsService {
   async findById(id: string): Promise<Booking | null> {
     return this.prisma.booking.findUnique({
       where: { id },
-      include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
+      include: { events: { orderBy: { createdAt: 'asc' } } },
     });
   }
 
@@ -37,34 +37,6 @@ export class BookingsService {
         agencyId,
         totalPrice,
         currency,
-      },
-    });
-  }
-
-  async updateStatus(
-    id: string,
-    status: BookingStatus,
-    changedBy: string,
-    reason?: string,
-  ): Promise<Booking> {
-    const booking = await this.prisma.booking.findUniqueOrThrow({
-      where: { id },
-    });
-
-    return this.prisma.booking.update({
-      where: { id },
-      data: {
-        status,
-        confirmedAt:
-          status === BookingStatus.CONFIRMED ? new Date() : undefined,
-        statusHistory: {
-          create: {
-            fromStatus: booking.status,
-            toStatus: status,
-            changedBy,
-            reason,
-          },
-        },
       },
     });
   }

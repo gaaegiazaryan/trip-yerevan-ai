@@ -1,5 +1,5 @@
 import { ManagerTakeoverService } from '../manager-takeover.service';
-import { ProxyChatStatus, UserRole } from '@prisma/client';
+import { ProxyChatState, UserRole } from '@prisma/client';
 
 function createMockPrisma() {
   return {
@@ -12,7 +12,7 @@ function createMockPrisma() {
 function createMockProxyChatService() {
   return {
     findByTravelRequest: jest.fn().mockResolvedValue([]),
-    updateStatus: jest.fn(),
+    transitionState: jest.fn(),
     assignManager: jest.fn(),
   };
 }
@@ -45,10 +45,10 @@ describe('ManagerTakeoverService', () => {
   });
 
   describe('onBookingCreated', () => {
-    it('should transition OPEN chats to BOOKED', async () => {
+    it('should transition OPEN chats to PAUSED', async () => {
       proxyChatService.findByTravelRequest.mockResolvedValue([
-        { id: 'pc-1', status: ProxyChatStatus.OPEN },
-        { id: 'pc-2', status: ProxyChatStatus.CLOSED },
+        { id: 'pc-1', state: ProxyChatState.OPEN },
+        { id: 'pc-2', state: ProxyChatState.CLOSED },
       ]);
       prisma.travelRequest.findUnique.mockResolvedValue({
         destination: 'Dubai',
@@ -56,12 +56,12 @@ describe('ManagerTakeoverService', () => {
 
       await service.onBookingCreated(TR_ID, BOOKING_ID);
 
-      expect(proxyChatService.updateStatus).toHaveBeenCalledWith(
+      expect(proxyChatService.transitionState).toHaveBeenCalledWith(
         'pc-1',
-        ProxyChatStatus.BOOKED,
+        ProxyChatState.PAUSED,
       );
       // Closed chat should NOT be transitioned
-      expect(proxyChatService.updateStatus).toHaveBeenCalledTimes(1);
+      expect(proxyChatService.transitionState).toHaveBeenCalledTimes(1);
       expect(auditLog.log).toHaveBeenCalledTimes(1);
     });
 
@@ -115,7 +115,7 @@ describe('ManagerTakeoverService', () => {
     it('should reject when already claimed', async () => {
       prisma.user.findUnique.mockResolvedValue({ role: UserRole.MANAGER });
       proxyChatService.findByTravelRequest.mockResolvedValue([
-        { id: 'pc-1', status: ProxyChatStatus.MANAGER_ASSIGNED },
+        { id: 'pc-1', state: ProxyChatState.ESCALATED },
       ]);
 
       const result = await service.claimChat(
@@ -145,7 +145,7 @@ describe('ManagerTakeoverService', () => {
     it('should assign manager and return notifications', async () => {
       prisma.user.findUnique.mockResolvedValue({ role: UserRole.MANAGER });
       proxyChatService.findByTravelRequest.mockResolvedValue([
-        { id: 'pc-1', status: ProxyChatStatus.BOOKED },
+        { id: 'pc-1', state: ProxyChatState.PAUSED },
       ]);
       prisma.proxyChat.findUnique.mockResolvedValue({
         id: 'pc-1',
@@ -171,11 +171,11 @@ describe('ManagerTakeoverService', () => {
       );
       expect(auditLog.log).toHaveBeenCalled();
 
-      // Traveler notification with chat button
+      // Traveler notification (no chat button — uses "Ask manager" on offer detail instead)
       const travelerNotif = result.notifications.find((n) => n.chatId === 12345);
       expect(travelerNotif).toBeDefined();
       expect(travelerNotif!.text).toContain('manager');
-      expect(travelerNotif!.buttons).toBeDefined();
+      expect((travelerNotif as any).buttons).toBeUndefined();
 
       // Agency notification
       const agentNotif = result.notifications.find((n) => n.chatId === 99999);
@@ -186,7 +186,7 @@ describe('ManagerTakeoverService', () => {
     it('should allow ADMIN users to claim', async () => {
       prisma.user.findUnique.mockResolvedValue({ role: UserRole.ADMIN });
       proxyChatService.findByTravelRequest.mockResolvedValue([
-        { id: 'pc-1', status: ProxyChatStatus.BOOKED },
+        { id: 'pc-1', state: ProxyChatState.PAUSED },
       ]);
       prisma.proxyChat.findUnique.mockResolvedValue({
         id: 'pc-1',

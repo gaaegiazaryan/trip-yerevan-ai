@@ -7,7 +7,7 @@ import { ChatAuditLogService, ChatAuditEvent } from './chat-audit-log.service';
 import {
   MessageContentType,
   MessageSenderType,
-  ProxyChatStatus,
+  ProxyChatState,
 } from '@prisma/client';
 import { formatForwardedMessage } from './proxy-chat-message-formatter';
 
@@ -24,7 +24,7 @@ export interface ProxyChatSession {
   /** Label prefix for forwarded messages (e.g. "Traveler", "Agency") */
   senderLabel: string;
   /** Current chat status for permission checks */
-  chatStatus: ProxyChatStatus;
+  chatState: ProxyChatState;
   /** Whether this session is a manager session */
   isManager: boolean;
   /** Human-readable agency name for pinned chat header */
@@ -35,8 +35,6 @@ export interface ProxyChatSession {
   lastActivityAt: number;
   /** User language for localized messages */
   language: SupportedLanguage;
-  /** Telegram message_id of last forwarded message received (for reply-only mode) */
-  lastReceivedForwardedMsgId?: number;
 }
 
 export interface ForwardTarget {
@@ -88,14 +86,6 @@ export class ProxyChatSessionService {
     const session = this.sessions.get(chatId);
     if (session) {
       session.pinnedMessageId = messageId;
-    }
-  }
-
-  /** Set the last forwarded message ID for reply-only validation. */
-  setLastForwardedMsgId(chatId: number, msgId: number): void {
-    const session = this.sessions.get(chatId);
-    if (session) {
-      session.lastReceivedForwardedMsgId = msgId;
     }
   }
 
@@ -159,12 +149,9 @@ export class ProxyChatSessionService {
       offer.agencyId,
     );
 
-    if (proxyChat && proxyChat.status === ProxyChatStatus.CLOSED) {
-      // Reopen closed chat
-      proxyChat = await this.prisma.proxyChat.update({
-        where: { id: proxyChat.id },
-        data: { status: ProxyChatStatus.OPEN, closedAt: null, offerId },
-      });
+    if (proxyChat && proxyChat.state === ProxyChatState.CLOSED) {
+      // Reopen closed chat via service (sets reopenedAt, lastActivityAt)
+      proxyChat = await this.proxyChatService.reopen(proxyChat.id, offerId);
     } else if (!proxyChat) {
       proxyChat = await this.proxyChatService.create(
         offer.travelRequestId,
@@ -197,7 +184,7 @@ export class ProxyChatSessionService {
       travelRequestId: offer.travelRequestId,
       counterpartChatIds,
       senderLabel: 'Traveler',
-      chatStatus: proxyChat.status,
+      chatState: proxyChat.state,
       isManager: false,
       agencyName: offer.agency.name,
       lastActivityAt: Date.now(),
@@ -248,7 +235,7 @@ export class ProxyChatSessionService {
       return { text: 'Chat not found.' };
     }
 
-    if (proxyChat.status === ProxyChatStatus.CLOSED) {
+    if (proxyChat.state === ProxyChatState.CLOSED) {
       return { text: 'This chat has been closed.' };
     }
 
@@ -276,7 +263,7 @@ export class ProxyChatSessionService {
       travelRequestId: proxyChat.travelRequestId,
       counterpartChatIds: [travelerChatId],
       senderLabel: proxyChat.agency.name,
-      chatStatus: proxyChat.status,
+      chatState: proxyChat.state,
       isManager: false,
       agencyName: proxyChat.agency.name,
       lastActivityAt: Date.now(),
@@ -315,7 +302,7 @@ export class ProxyChatSessionService {
       return { text: 'Chat not found.' };
     }
 
-    if (proxyChat.status === ProxyChatStatus.CLOSED) {
+    if (proxyChat.state === ProxyChatState.CLOSED) {
       return { text: 'This chat has been closed.' };
     }
 
@@ -336,7 +323,7 @@ export class ProxyChatSessionService {
       travelRequestId: proxyChat.travelRequestId,
       counterpartChatIds: [travelerChatId],
       senderLabel: 'Manager',
-      chatStatus: proxyChat.status,
+      chatState: proxyChat.state,
       isManager: true,
       agencyName: 'N/A',
       lastActivityAt: Date.now(),
@@ -393,7 +380,7 @@ export class ProxyChatSessionService {
       travelRequestId: proxyChat.travelRequestId,
       counterpartChatIds: [managerChatId],
       senderLabel: 'Traveler',
-      chatStatus: proxyChat.status,
+      chatState: proxyChat.state,
       isManager: false,
       agencyName: 'Manager Chat',
       lastActivityAt: Date.now(),
@@ -413,6 +400,121 @@ export class ProxyChatSessionService {
   }
 
   /**
+   * Universal reply entry point — auto-detects whether the user is
+   * the traveler or an agency member and creates the correct session.
+   * Used by the chat:reply: callback (both sides click the same button).
+   */
+  async startReply(
+    chatId: number,
+    proxyChatId: string,
+    userId: string,
+    userTelegramId: bigint,
+  ): Promise<StartChatResult> {
+    const proxyChat = await this.prisma.proxyChat.findUnique({
+      where: { id: proxyChatId },
+      include: {
+        user: { select: { id: true, telegramId: true } },
+        agency: {
+          select: {
+            id: true,
+            name: true,
+            agencyTelegramChatId: true,
+            memberships: {
+              select: { userId: true, user: { select: { telegramId: true } } },
+              where: { status: 'ACTIVE' },
+            },
+          },
+        },
+        offer: { select: { id: true } },
+      },
+    });
+
+    if (!proxyChat) {
+      return { text: 'Chat not found.' };
+    }
+
+    if (proxyChat.state === ProxyChatState.CLOSED) {
+      return { text: 'This chat has been closed.' };
+    }
+
+    // Case 1: User is the traveler
+    if (proxyChat.user.id === userId) {
+      const counterpartChatIds: number[] = [];
+      for (const m of proxyChat.agency.memberships) {
+        counterpartChatIds.push(Number(m.user.telegramId));
+      }
+      if (
+        proxyChat.agency.agencyTelegramChatId &&
+        !counterpartChatIds.includes(Number(proxyChat.agency.agencyTelegramChatId))
+      ) {
+        counterpartChatIds.push(Number(proxyChat.agency.agencyTelegramChatId));
+      }
+
+      this.sessions.set(chatId, {
+        proxyChatId: proxyChat.id,
+        senderType: MessageSenderType.USER,
+        senderId: userId,
+        offerId: proxyChat.offer?.id ?? '',
+        travelRequestId: proxyChat.travelRequestId,
+        counterpartChatIds,
+        senderLabel: 'Traveler',
+        chatState: proxyChat.state,
+        isManager: false,
+        agencyName: proxyChat.agency.name,
+        lastActivityAt: Date.now(),
+        language: 'EN',
+      });
+
+      this.logger.log(
+        `[proxy-chat] action=start_traveler_reply, chatId=${chatId}, userId=${userId}, proxyChatId=${proxyChatId}`,
+      );
+
+      return {
+        text:
+          `You are now chatting about *${proxyChat.agency.name}*'s offer.\n\n` +
+          `Type your message and it will be forwarded anonymously.`,
+        proxyChatId: proxyChat.id,
+      };
+    }
+
+    // Case 2: User is an agency member
+    const membership = proxyChat.agency.memberships.find(
+      (m) => m.user.telegramId === userTelegramId,
+    );
+    if (membership) {
+      const travelerChatId = Number(proxyChat.user.telegramId);
+
+      this.sessions.set(chatId, {
+        proxyChatId: proxyChat.id,
+        senderType: MessageSenderType.AGENCY,
+        senderId: membership.userId,
+        offerId: proxyChat.offer?.id ?? '',
+        travelRequestId: proxyChat.travelRequestId,
+        counterpartChatIds: [travelerChatId],
+        senderLabel: proxyChat.agency.name,
+        chatState: proxyChat.state,
+        isManager: false,
+        agencyName: proxyChat.agency.name,
+        lastActivityAt: Date.now(),
+        language: 'EN',
+      });
+
+      this.logger.log(
+        `[proxy-chat] action=start_agency_reply, chatId=${chatId}, agentTelegramId=${userTelegramId}, proxyChatId=${proxyChatId}`,
+      );
+
+      return {
+        text:
+          `You are now replying to a traveler's question.\n\n` +
+          `Type your message and it will be forwarded anonymously.`,
+        proxyChatId: proxyChat.id,
+      };
+    }
+
+    return { text: 'You are not a participant of this chat.' };
+  }
+
+  /**
    * Handle an incoming text/photo/document message from an active session.
    * Checks permissions and contact leak before storing and forwarding.
    */
@@ -425,14 +527,21 @@ export class ProxyChatSessionService {
     const session = this.sessions.get(chatId);
     if (!session) return { targets: [] };
 
+    this.logger.debug(
+      `[proxy-chat] handleMessage: chatId=${chatId}, senderType=${session.senderType}, senderId=${session.senderId}, chatState=${session.chatState}, proxyChatId=${session.proxyChatId}`,
+    );
+
     // Check permissions
     const permission = this.chatPermission.check(
-      session.chatStatus,
+      session.chatState,
       session.senderType,
       session.isManager,
     );
 
     if (!permission.allowed) {
+      this.logger.warn(
+        `[proxy-chat] message blocked: chatId=${chatId}, senderType=${session.senderType}, chatState=${session.chatState}, reason=${permission.reason}`,
+      );
       return {
         targets: [],
         blocked: true,
@@ -475,7 +584,7 @@ export class ProxyChatSessionService {
       isManager: session.isManager,
       content,
       contentType,
-      chatStatus: session.chatStatus,
+      chatState: session.chatState,
       agencyName: session.agencyName,
       language: session.language,
     });

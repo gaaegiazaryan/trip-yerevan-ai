@@ -4,10 +4,10 @@ import { Job } from 'bullmq';
 import { ProxyChatService } from './proxy-chat.service';
 import { ChatAuditLogService, ChatAuditEvent } from './chat-audit-log.service';
 import { TelegramService } from '../telegram/telegram.service';
+import { CloseReason } from '@prisma/client';
 import {
   PROXY_CHAT_QUEUE,
   INACTIVITY_DAYS,
-  CLOSED_REASON_AUTO_INACTIVITY,
 } from './proxy-chat.constants';
 
 @Processor(PROXY_CHAT_QUEUE)
@@ -36,7 +36,7 @@ export class ProxyChatCleanupProcessor extends WorkerHost {
     let closed = 0;
     for (const chat of inactiveChats) {
       try {
-        await this.proxyChatService.close(chat.id, CLOSED_REASON_AUTO_INACTIVITY);
+        await this.proxyChatService.close(chat.id, CloseReason.INACTIVITY);
         await this.chatAuditLog.log(
           chat.id,
           ChatAuditEvent.CHAT_AUTO_CLOSED,

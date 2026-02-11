@@ -1,4 +1,4 @@
-import { MessageContentType, MessageSenderType, ProxyChatStatus } from '@prisma/client';
+import { MessageContentType, MessageSenderType, ProxyChatState } from '@prisma/client';
 import { formatForwardedMessage } from '../proxy-chat-message-formatter';
 
 describe('formatForwardedMessage', () => {
@@ -8,12 +8,12 @@ describe('formatForwardedMessage', () => {
     isManager: false,
     content: 'Hello, I have a question',
     contentType: MessageContentType.TEXT,
-    chatStatus: ProxyChatStatus.OPEN,
+    chatState: ProxyChatState.OPEN,
     agencyName: 'TravelCo',
     language: 'EN' as const,
   };
 
-  it('should include OPEN status indicator', () => {
+  it('should include OPEN state indicator', () => {
     const result = formatForwardedMessage(baseParams);
     expect(result).toContain('🟢 OPEN');
     expect(result).toContain('TravelCo');
@@ -21,44 +21,36 @@ describe('formatForwardedMessage', () => {
     expect(result).toContain('Hello, I have a question');
   });
 
-  it('should include CLOSED status indicator', () => {
+  it('should include CLOSED state indicator', () => {
     const result = formatForwardedMessage({
       ...baseParams,
-      chatStatus: ProxyChatStatus.CLOSED,
+      chatState: ProxyChatState.CLOSED,
     });
     expect(result).toContain('🔴 CLOSED');
   });
 
-  it('should include BOOKED status indicator', () => {
+  it('should include REPLY_ONLY state indicator', () => {
     const result = formatForwardedMessage({
       ...baseParams,
-      chatStatus: ProxyChatStatus.BOOKED,
+      chatState: ProxyChatState.REPLY_ONLY,
     });
-    expect(result).toContain('📋 BOOKED');
+    expect(result).toContain('📋 REPLY ONLY');
   });
 
-  it('should include MANAGER_ASSIGNED status indicator', () => {
+  it('should include PAUSED state indicator', () => {
     const result = formatForwardedMessage({
       ...baseParams,
-      chatStatus: ProxyChatStatus.MANAGER_ASSIGNED,
+      chatState: ProxyChatState.PAUSED,
     });
-    expect(result).toContain('👤 MANAGER');
+    expect(result).toContain('⏸ PAUSED');
   });
 
-  it('should include COMPLETED status indicator', () => {
+  it('should include ESCALATED state indicator', () => {
     const result = formatForwardedMessage({
       ...baseParams,
-      chatStatus: ProxyChatStatus.COMPLETED,
+      chatState: ProxyChatState.ESCALATED,
     });
-    expect(result).toContain('✅ COMPLETED');
-  });
-
-  it('should include ARCHIVED status indicator', () => {
-    const result = formatForwardedMessage({
-      ...baseParams,
-      chatStatus: ProxyChatStatus.ARCHIVED,
-    });
-    expect(result).toContain('📁 ARCHIVED');
+    expect(result).toContain('👤 ESCALATED');
   });
 
   it('should use Russian labels when language is RU', () => {

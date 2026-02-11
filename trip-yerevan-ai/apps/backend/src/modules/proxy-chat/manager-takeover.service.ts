@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ProxyChatService } from './proxy-chat.service';
 import { ChatAuditLogService, ChatAuditEvent } from './chat-audit-log.service';
 import { PrismaService } from '../../infra/prisma/prisma.service';
-import { ProxyChatStatus, UserRole } from '@prisma/client';
+import { ProxyChatState, UserRole } from '@prisma/client';
 
 export interface TakeoverNotification {
   chatId: number;
@@ -41,15 +41,15 @@ export class ManagerTakeoverService {
   ): Promise<BookingCreatedResult> {
     // Find all OPEN proxy chats for this TR and transition to BOOKED
     const chats = await this.proxyChatService.findByTravelRequest(travelRequestId);
-    const openChats = chats.filter((c) => c.status === ProxyChatStatus.OPEN);
+    const openChats = chats.filter((c) => c.state === ProxyChatState.OPEN);
 
     for (const chat of openChats) {
-      await this.proxyChatService.updateStatus(chat.id, ProxyChatStatus.BOOKED);
+      await this.proxyChatService.transitionState(chat.id, ProxyChatState.PAUSED);
       await this.chatAuditLog.log(
         chat.id,
         ChatAuditEvent.STATUS_CHANGED,
         undefined,
-        { from: ProxyChatStatus.OPEN, to: ProxyChatStatus.BOOKED, bookingId },
+        { from: ProxyChatState.OPEN, to: ProxyChatState.PAUSED, bookingId },
       );
     }
 
@@ -109,12 +109,12 @@ export class ManagerTakeoverService {
 
     // Find BOOKED proxy chat for this TR
     const chats = await this.proxyChatService.findByTravelRequest(travelRequestId);
-    const bookedChat = chats.find((c) => c.status === ProxyChatStatus.BOOKED);
+    const bookedChat = chats.find((c) => c.state === ProxyChatState.PAUSED);
 
     if (!bookedChat) {
       // Maybe already claimed or no chat exists
       const managedChat = chats.find(
-        (c) => c.status === ProxyChatStatus.MANAGER_ASSIGNED,
+        (c) => c.state === ProxyChatState.ESCALATED,
       );
       if (managedChat) {
         return {
@@ -168,13 +168,7 @@ export class ManagerTakeoverService {
         chatId: Number(chatWithRelations.user.telegramId),
         text:
           `A manager has been assigned to your booking.\n\n` +
-          `You can now chat directly with your manager for any questions or updates.`,
-        buttons: [
-          {
-            label: '\ud83d\udcac Chat with manager',
-            callbackData: `chat:mgr:${bookedChat.id}`,
-          },
-        ],
+          `For any questions, use the "Ask manager" button on the offer detail.`,
       });
 
       // Notify agency agents

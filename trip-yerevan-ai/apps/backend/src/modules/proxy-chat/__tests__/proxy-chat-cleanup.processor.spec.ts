@@ -1,5 +1,5 @@
 import { ProxyChatCleanupProcessor } from '../proxy-chat-cleanup.processor';
-import { ProxyChatStatus } from '@prisma/client';
+import { CloseReason, ProxyChatState } from '@prisma/client';
 
 function createMockProxyChatService() {
   return {
@@ -39,8 +39,8 @@ describe('ProxyChatCleanupProcessor', () => {
 
   it('should close inactive chats', async () => {
     proxyChatService.findInactiveChats.mockResolvedValue([
-      { id: 'pc-1', status: ProxyChatStatus.OPEN },
-      { id: 'pc-2', status: ProxyChatStatus.BOOKED },
+      { id: 'pc-1', state: ProxyChatState.OPEN },
+      { id: 'pc-2', state: ProxyChatState.REPLY_ONLY },
     ]);
 
     await processor.process({} as any);
@@ -48,11 +48,11 @@ describe('ProxyChatCleanupProcessor', () => {
     expect(proxyChatService.close).toHaveBeenCalledTimes(2);
     expect(proxyChatService.close).toHaveBeenCalledWith(
       'pc-1',
-      'auto_closed_inactivity',
+      CloseReason.INACTIVITY,
     );
     expect(proxyChatService.close).toHaveBeenCalledWith(
       'pc-2',
-      'auto_closed_inactivity',
+      CloseReason.INACTIVITY,
     );
     expect(auditLog.log).toHaveBeenCalledTimes(2);
   });
@@ -67,8 +67,8 @@ describe('ProxyChatCleanupProcessor', () => {
 
   it('should handle individual close failures gracefully', async () => {
     proxyChatService.findInactiveChats.mockResolvedValue([
-      { id: 'pc-1', status: ProxyChatStatus.OPEN },
-      { id: 'pc-2', status: ProxyChatStatus.OPEN },
+      { id: 'pc-1', state: ProxyChatState.OPEN },
+      { id: 'pc-2', state: ProxyChatState.OPEN },
     ]);
 
     proxyChatService.close
@@ -99,7 +99,7 @@ describe('ProxyChatCleanupProcessor', () => {
 
   it('should notify traveler and agents on auto-close', async () => {
     proxyChatService.findInactiveChats.mockResolvedValue([
-      { id: 'pc-1', status: ProxyChatStatus.OPEN },
+      { id: 'pc-1', state: ProxyChatState.OPEN },
     ]);
     proxyChatService.getParticipantTelegramIds.mockResolvedValue({
       travelerTelegramId: BigInt(12345),
@@ -136,7 +136,7 @@ describe('ProxyChatCleanupProcessor', () => {
 
   it('should include reopen button in notifications', async () => {
     proxyChatService.findInactiveChats.mockResolvedValue([
-      { id: 'pc-42', status: ProxyChatStatus.OPEN },
+      { id: 'pc-42', state: ProxyChatState.OPEN },
     ]);
     proxyChatService.getParticipantTelegramIds.mockResolvedValue({
       travelerTelegramId: BigInt(12345),
@@ -159,7 +159,7 @@ describe('ProxyChatCleanupProcessor', () => {
 
   it('should skip notification when no participants found', async () => {
     proxyChatService.findInactiveChats.mockResolvedValue([
-      { id: 'pc-1', status: ProxyChatStatus.OPEN },
+      { id: 'pc-1', state: ProxyChatState.OPEN },
     ]);
     proxyChatService.getParticipantTelegramIds.mockResolvedValue(null);
 

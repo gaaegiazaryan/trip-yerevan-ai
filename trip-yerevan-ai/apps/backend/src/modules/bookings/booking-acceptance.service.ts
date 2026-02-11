@@ -6,6 +6,10 @@ import {
   OfferStatus,
   TravelRequestStatus,
 } from '@prisma/client';
+import {
+  BookingStateMachineService,
+  BookingNotification,
+} from './booking-state-machine.service';
 
 export interface AcceptConfirmationResult {
   text: string;
@@ -15,6 +19,7 @@ export interface AcceptConfirmationResult {
 export interface AcceptanceNotification {
   chatId: number;
   text: string;
+  buttons?: { label: string; callbackData: string }[];
 }
 
 export interface AcceptanceResult {
@@ -33,6 +38,7 @@ export class BookingAcceptanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly stateMachine: BookingStateMachineService,
   ) {
     const raw = this.config.get<string>('MANAGER_CHANNEL_CHAT_ID');
     this.managerChannelChatId = raw ? Number(raw) : null;
@@ -69,12 +75,17 @@ export class BookingAcceptanceService {
       return { text: 'This offer has already been accepted.' };
     }
 
-    if (offer.status === OfferStatus.WITHDRAWN || offer.status === OfferStatus.EXPIRED) {
+    if (
+      offer.status === OfferStatus.WITHDRAWN ||
+      offer.status === OfferStatus.EXPIRED
+    ) {
       return { text: 'This offer is no longer available.' };
     }
 
     if (offer.travelRequest.status === TravelRequestStatus.BOOKED) {
-      return { text: 'A booking already exists for this travel request.' };
+      return {
+        text: 'A booking already exists for this travel request.',
+      };
     }
 
     const price = Number(offer.totalPrice).toLocaleString('en-US');
@@ -86,7 +97,10 @@ export class BookingAcceptanceService {
         `*Price:* ${price} ${offer.currency}\n\n` +
         `This will create a booking and notify the agency.`,
       buttons: [
-        { label: '\u2705 Confirm', callbackData: `offers:cfm:${offerId}` },
+        {
+          label: '\u2705 Confirm',
+          callbackData: `offers:cfm:${offerId}`,
+        },
         { label: '\u274c Cancel', callbackData: 'offers:cxl' },
       ],
     };
@@ -104,7 +118,12 @@ export class BookingAcceptanceService {
       where: { id: offerId },
       include: {
         travelRequest: {
-          select: { id: true, userId: true, status: true, destination: true },
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+            destination: true,
+          },
         },
         agency: {
           select: { id: true, name: true, agencyTelegramChatId: true },
@@ -116,22 +135,34 @@ export class BookingAcceptanceService {
     });
 
     if (!offer) {
-      return { text: 'Offer not found.', notifications: [], travelRequestId: '' };
+      return {
+        text: 'Offer not found.',
+        notifications: [],
+        travelRequestId: '',
+      };
     }
 
     if (offer.travelRequest.userId !== userId) {
-      return { text: 'You are not authorized to accept this offer.', notifications: [], travelRequestId: '' };
+      return {
+        text: 'You are not authorized to accept this offer.',
+        notifications: [],
+        travelRequestId: '',
+      };
     }
 
     if (offer.travelRequest.status === TravelRequestStatus.BOOKED) {
-      return { text: 'A booking already exists for this travel request.', notifications: [], travelRequestId: offer.travelRequestId };
+      return {
+        text: 'A booking already exists for this travel request.',
+        notifications: [],
+        travelRequestId: offer.travelRequestId,
+      };
     }
 
     // Atomic transaction: create booking + update statuses
     let bookingId: string;
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        // 1. Create booking
+        // 1. Create booking with CREATED status
         const booking = await tx.booking.create({
           data: {
             travelRequestId: offer.travelRequestId,
@@ -140,7 +171,13 @@ export class BookingAcceptanceService {
             agencyId: offer.agency.id,
             totalPrice: offer.totalPrice,
             currency: offer.currency,
-            status: BookingStatus.PENDING_CONFIRMATION,
+            status: BookingStatus.CREATED,
+            priceSnapshot: {
+              totalPrice: Number(offer.totalPrice),
+              currency: offer.currency,
+              agencyName: offer.agency.name,
+              destination: offer.travelRequest.destination,
+            },
           },
         });
 
@@ -193,11 +230,20 @@ export class BookingAcceptanceService {
       `[booking] action=created, bookingId=${bookingId}, offerId=${offerId}, userId=${userId}, agencyId=${offer.agency.id}`,
     );
 
-    // Build notifications
-    const notifications: AcceptanceNotification[] = [];
+    // Transition CREATED → AWAITING_AGENCY_CONFIRMATION via state machine
+    const smResult = await this.stateMachine.transition(
+      bookingId,
+      BookingStatus.AWAITING_AGENCY_CONFIRMATION,
+      { triggeredBy: userId },
+    );
+
+    // Build traveler confirmation notification
     const price = Number(offer.totalPrice).toLocaleString('en-US');
     const dest = offer.travelRequest.destination ?? 'Travel request';
     const shortBookingId = bookingId.slice(0, 8);
+
+    // Build creation notifications (agent, agency group, manager channel)
+    const notifications: AcceptanceNotification[] = [];
 
     const agentNotification =
       `\u2705 *Offer Accepted!*\n\n` +
@@ -234,6 +280,11 @@ export class BookingAcceptanceService {
         chatId: this.managerChannelChatId,
         text: managerNotification,
       });
+    }
+
+    // Merge state machine notifications (agency confirm/reject buttons)
+    for (const n of smResult.notifications) {
+      notifications.push(n);
     }
 
     return {

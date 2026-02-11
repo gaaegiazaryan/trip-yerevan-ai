@@ -101,13 +101,32 @@ enum OfferItemType {
   OTHER
 }
 
-enum ProxyChatStatus {
+enum ProxyChatState {
   OPEN
-  BOOKED
-  MANAGER_ASSIGNED
-  COMPLETED
+  REPLY_ONLY
+  PAUSED
+  ESCALATED
   CLOSED
+}
+
+enum CloseReason {
+  MANUAL
+  INACTIVITY
+  MANAGER
+  COMPLETED
   ARCHIVED
+}
+
+enum PolicyDecision {
+  ALLOW
+  BLOCK
+  FLAG
+  REDACT
+}
+
+enum ChatChannel {
+  TELEGRAM
+  WEB
 }
 
 enum MessageSenderType {
@@ -123,12 +142,17 @@ enum MessageContentType {
 }
 
 enum BookingStatus {
-  PENDING_CONFIRMATION
-  CONFIRMED
+  CREATED
+  AWAITING_AGENCY_CONFIRMATION
+  AGENCY_CONFIRMED
+  MANAGER_VERIFIED
+  PAYMENT_PENDING
   PAID
+  IN_PROGRESS
   COMPLETED
   CANCELLED
-  REJECTED
+  EXPIRED
+  REJECTED_BY_AGENCY
 }
 
 enum AIConversationStatus {
@@ -192,6 +216,12 @@ enum AttachmentType {
   OTHER
 }
 
+enum SupportThreadStatus {
+  OPEN
+  REPLIED
+  CLOSED
+}
+
 // ============================================================================
 // USERS
 // ============================================================================
@@ -215,11 +245,12 @@ model User {
   bookings             Booking[]
   proxyChats           ProxyChat[]
   aiConversations      AIConversation[]
-  bookingHistory       BookingStatusHistory[]
   applications         AgencyApplication[] @relation("ApplicationApplicant")
   reviewedApplications AgencyApplication[] @relation("ApplicationReviewer")
   verifiedAgencies     Agency[]            @relation("AgencyVerifier")
   managedProxyChats    ProxyChat[]         @relation("ProxyChatManager")
+  supportThreads       SupportThread[]
+  supportMessages      SupportMessage[]    @relation("SupportMessageSender")
 
   @@map("users")
 }
@@ -319,6 +350,7 @@ model TravelRequest {
   booking           Booking?
   aiConversation    AIConversation?
   rfqDistributions  RfqDistribution[]
+  supportThreads    SupportThread[]
 
   @@index([userId])
   @@index([status])
@@ -380,8 +412,9 @@ model Offer {
   membership    AgencyMembership @relation(fields: [membershipId], references: [id])
   items         OfferItem[]
   attachments   OfferAttachment[]
-  booking       Booking?
-  proxyChats    ProxyChat[]
+  booking        Booking?
+  proxyChats     ProxyChat[]
+  supportThreads SupportThread[]
 
   @@unique([travelRequestId, agencyId])
   @@index([travelRequestId])
@@ -430,18 +463,24 @@ model OfferAttachment {
 // ============================================================================
 
 model ProxyChat {
-  id              String          @id @default(uuid()) @db.Uuid
-  travelRequestId String          @db.Uuid
-  userId          String          @db.Uuid
-  agencyId        String          @db.Uuid
-  offerId         String?         @db.Uuid
-  status          ProxyChatStatus @default(OPEN)
-  closedReason    String?
-  managerId       String?         @db.Uuid
-  createdAt       DateTime        @default(now())
-  closedAt        DateTime?
-  lastActivityAt  DateTime        @default(now())
-  reopenedAt      DateTime?
+  id               String         @id @default(uuid()) @db.Uuid
+  travelRequestId  String         @db.Uuid
+  userId           String         @db.Uuid
+  agencyId         String         @db.Uuid
+  offerId          String?        @db.Uuid
+  state            ProxyChatState @default(OPEN)
+  closeReason      CloseReason?
+  managerId        String?        @db.Uuid
+  lastMessageAt    DateTime?
+  lastMessageBy    String?        @db.Uuid
+  replyWindowUntil DateTime?
+  policyVersion    String         @default("v1")
+  riskScore        Int            @default(0)
+  channel          ChatChannel    @default(TELEGRAM)
+  createdAt        DateTime       @default(now())
+  closedAt         DateTime?
+  lastActivityAt   DateTime       @default(now())
+  reopenedAt       DateTime?
 
   // Relations
   travelRequest TravelRequest    @relation(fields: [travelRequestId], references: [id])
@@ -455,21 +494,24 @@ model ProxyChat {
   @@unique([travelRequestId, userId, agencyId])
   @@index([userId])
   @@index([agencyId])
-  @@index([status])
+  @@index([state])
   @@index([managerId])
   @@map("proxy_chats")
 }
 
 model ProxyChatMessage {
-  id             String             @id @default(uuid()) @db.Uuid
-  proxyChatId    String             @db.Uuid
-  senderType     MessageSenderType
-  senderId       String             @db.Uuid
-  content        String             @db.VarChar(4000)
-  contentType    MessageContentType @default(TEXT)
-  telegramFileId String?
-  createdAt      DateTime           @default(now())
-  readAt         DateTime?
+  id              String             @id @default(uuid()) @db.Uuid
+  proxyChatId     String             @db.Uuid
+  senderType      MessageSenderType
+  senderId        String             @db.Uuid
+  content         String             @db.VarChar(4000)
+  contentType     MessageContentType @default(TEXT)
+  telegramFileId  String?
+  policyDecision  PolicyDecision?
+  policyReasons   String[]           @default([])
+  redactions      Json?
+  createdAt       DateTime           @default(now())
+  readAt          DateTime?
 
   // Relations
   proxyChat ProxyChat @relation(fields: [proxyChatId], references: [id], onDelete: Cascade)
@@ -495,6 +537,43 @@ model ChatAuditLog {
 }
 
 // ============================================================================
+// SUPPORT THREADS
+// ============================================================================
+
+model SupportThread {
+  id               String              @id @default(uuid()) @db.Uuid
+  userId           String              @db.Uuid
+  offerId          String?             @db.Uuid
+  travelRequestId  String?             @db.Uuid
+  status           SupportThreadStatus @default(OPEN)
+  createdAt        DateTime            @default(now())
+  closedAt         DateTime?
+
+  user             User                @relation(fields: [userId], references: [id])
+  offer            Offer?              @relation(fields: [offerId], references: [id])
+  travelRequest    TravelRequest?      @relation(fields: [travelRequestId], references: [id])
+  messages         SupportMessage[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("support_threads")
+}
+
+model SupportMessage {
+  id              String   @id @default(uuid()) @db.Uuid
+  threadId        String   @db.Uuid
+  senderUserId    String   @db.Uuid
+  content         String
+  createdAt       DateTime @default(now())
+
+  thread          SupportThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sender          User          @relation("SupportMessageSender", fields: [senderUserId], references: [id])
+
+  @@index([threadId])
+  @@map("support_messages")
+}
+
+// ============================================================================
 // BOOKINGS
 // ============================================================================
 
@@ -504,41 +583,63 @@ model Booking {
   offerId         String        @unique @db.Uuid
   userId          String        @db.Uuid
   agencyId        String        @db.Uuid
-  status          BookingStatus @default(PENDING_CONFIRMATION)
+  status          BookingStatus @default(CREATED)
   totalPrice      Decimal       @db.Decimal(12, 2)
   currency        Currency
-  confirmedAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+
+  // Lifecycle timestamps
+  confirmedAt       DateTime?
+  managerVerifiedAt DateTime?
+  paidAt            DateTime?
+  cancelledAt       DateTime?
+  expiredAt         DateTime?
+
+  // Expiry scheduling
+  expireAt DateTime?
+
+  // Actor tracking
+  agencyConfirmedBy String? @db.Uuid
+  managerVerifiedBy String? @db.Uuid
+
+  // Cancellation
+  cancelReason String?
+
+  // Snapshots (frozen at booking time for audit)
+  priceSnapshot      Json?
+  commissionSnapshot Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  travelRequest TravelRequest          @relation(fields: [travelRequestId], references: [id])
-  offer         Offer                  @relation(fields: [offerId], references: [id])
-  user          User                   @relation(fields: [userId], references: [id])
-  agency        Agency                 @relation(fields: [agencyId], references: [id])
-  statusHistory BookingStatusHistory[]
+  travelRequest TravelRequest @relation(fields: [travelRequestId], references: [id])
+  offer         Offer         @relation(fields: [offerId], references: [id])
+  user          User          @relation(fields: [userId], references: [id])
+  agency        Agency        @relation(fields: [agencyId], references: [id])
+  events        BookingEvent[]
 
   @@index([userId])
   @@index([agencyId])
   @@index([status])
+  @@index([expireAt])
   @@map("bookings")
 }
 
-model BookingStatusHistory {
-  id         String        @id @default(uuid()) @db.Uuid
-  bookingId  String        @db.Uuid
-  fromStatus BookingStatus
-  toStatus   BookingStatus
-  changedBy  String        @db.Uuid
-  reason     String?
-  createdAt  DateTime      @default(now())
+model BookingEvent {
+  id          String        @id @default(uuid()) @db.Uuid
+  bookingId   String        @db.Uuid
+  fromStatus  BookingStatus
+  toStatus    BookingStatus
+  triggeredBy String?       @db.Uuid
+  reason      String?
+  metadata    Json?
+  createdAt   DateTime      @default(now())
 
   // Relations
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [changedBy], references: [id])
 
   @@index([bookingId, createdAt])
-  @@map("booking_status_history")
+  @@map("booking_events")
 }
 
 // ============================================================================

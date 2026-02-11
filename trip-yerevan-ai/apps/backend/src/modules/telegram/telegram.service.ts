@@ -168,6 +168,46 @@ export class TelegramService {
     }
   }
 
+  /**
+   * Sends a message with a single inline URL button (e.g., direct Telegram link).
+   */
+  async sendMessageWithUrlButton(
+    chatId: number,
+    text: string,
+    buttonLabel: string,
+    url: string,
+  ): Promise<number | undefined> {
+    if (!this.bot) {
+      this.logger.warn('Bot not initialized, cannot send URL button');
+      return undefined;
+    }
+
+    const keyboard = new InlineKeyboard().url(buttonLabel, url).row();
+
+    try {
+      const msg = await this.bot.api.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+      return msg.message_id;
+    } catch (error) {
+      this.logger.warn(
+        `Markdown URL button send failed for chat ${chatId}, retrying as plain text`,
+      );
+      try {
+        const msg = await this.bot.api.sendMessage(chatId, text, {
+          reply_markup: keyboard,
+        });
+        return msg.message_id;
+      } catch (retryError) {
+        this.logger.error(
+          `Failed to send URL button to chat ${chatId}: ${retryError}`,
+        );
+        throw retryError;
+      }
+    }
+  }
+
   async editMessageText(
     chatId: number,
     messageId: number,

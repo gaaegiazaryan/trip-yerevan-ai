@@ -207,7 +207,7 @@ export class OfferViewerService {
         callbackData: `offers:b:${offer.travelRequestId}`,
       },
       {
-        label: '\u2753 Ask question',
+        label: '\ud83d\udcac Ask manager',
         callbackData: `offers:ask:${offerId}`,
       },
       {

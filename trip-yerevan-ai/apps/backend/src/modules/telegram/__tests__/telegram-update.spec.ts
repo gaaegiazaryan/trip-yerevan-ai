@@ -2,9 +2,8 @@ import { TelegramUpdate } from '../telegram.update';
 import { Language, UserRole, UserStatus } from '@prisma/client';
 
 /**
- * Smoke test: exercises the text-message path through TelegramUpdate
- * with fully-mocked dependencies. Catches stale-build mismatches
- * (like `isActiveAgent is not a function`) at test-time.
+ * Smoke test: exercises text-message, offer-view, and direct manager link flows
+ * through TelegramUpdate with fully-mocked dependencies.
  */
 
 const MOCK_USER = {
@@ -55,6 +54,7 @@ function createMocks() {
     removeReplyKeyboard: jest.fn().mockResolvedValue(201),
     pinMessage: jest.fn().mockResolvedValue(true),
     unpinMessage: jest.fn().mockResolvedValue(true),
+    sendMessageWithUrlButton: jest.fn().mockResolvedValue(102),
   };
 
   const rateLimiter = {
@@ -104,40 +104,19 @@ function createMocks() {
     findActiveAgentTelegramIds: jest.fn(),
   };
 
-  const proxyChatSession = {
-    hasActiveSession: jest.fn().mockReturnValue(false),
-    getSession: jest.fn(),
-    exitSession: jest.fn(),
-    startTravelerChat: jest.fn(),
-    startAgencyReply: jest.fn(),
-    startTravelerManagerChat: jest.fn(),
-    startManagerChat: jest.fn(),
-    handleMessage: jest.fn().mockResolvedValue({ targets: [] }),
-    closeChat: jest.fn(),
-    getExpiredSessions: jest.fn().mockReturnValue([]),
-    touchSession: jest.fn(),
-    setPinnedMessageId: jest.fn(),
-    setLastForwardedMsgId: jest.fn(),
-  };
-
   const bookingAcceptance = {
     showConfirmation: jest.fn(),
     confirmAcceptance: jest.fn(),
     getManagerChannelChatId: jest.fn().mockReturnValue(null),
   };
 
+  const bookingCallbackHandler = {
+    handleCallback: jest.fn().mockResolvedValue({ text: 'OK', notifications: [] }),
+  };
+
   const managerTakeover = {
     onBookingCreated: jest.fn().mockResolvedValue({}),
     claimChat: jest.fn(),
-  };
-
-  const proxyChatService = {
-    reopen: jest.fn().mockResolvedValue({}),
-    getParticipantTelegramIds: jest.fn().mockResolvedValue(null),
-  };
-
-  const chatAuditLog = {
-    log: jest.fn(),
   };
 
   return {
@@ -151,10 +130,8 @@ function createMocks() {
     agencyApp,
     agenciesService,
     agencyMgmt,
-    proxyChatSession,
-    proxyChatService,
-    chatAuditLog,
     bookingAcceptance,
+    bookingCallbackHandler,
     managerTakeover,
   };
 }
@@ -176,16 +153,13 @@ describe('TelegramUpdate', () => {
       mocks.agencyApp as any,
       mocks.agenciesService as any,
       mocks.agencyMgmt as any,
-      mocks.proxyChatSession as any,
-      mocks.proxyChatService as any,
-      mocks.chatAuditLog as any,
       mocks.bookingAcceptance as any,
+      mocks.bookingCallbackHandler as any,
       mocks.managerTakeover as any,
     );
   });
 
   afterEach(async () => {
-    // Clean up the rate-limiter interval started in onModuleInit
     await update.onModuleDestroy();
   });
 
@@ -203,13 +177,9 @@ describe('TelegramUpdate', () => {
     });
 
     it('should throw if a critical service method is missing (stale dist)', () => {
-      // Simulate stale dist: isActiveMember was renamed but JS still has old name
       (mocks.agenciesService as any).isActiveMember = undefined;
 
       expect(() => {
-        // onModuleInit calls assertServiceContracts synchronously at the top
-        // We need to invoke it and catch the sync throw before the async part
-        // Since assertServiceContracts is called first, the promise will reject
         return update.onModuleInit();
       }).rejects.toThrow('Service contract broken');
     });
@@ -225,24 +195,19 @@ describe('TelegramUpdate', () => {
     it('should auto-restart polling after 409 conflict', async () => {
       jest.useFakeTimers();
 
-      // First call rejects (simulates 409), second call resolves
       mocks.bot.start
         .mockRejectedValueOnce(new Error('409: Conflict'))
         .mockResolvedValueOnce(undefined);
 
       await update.onModuleInit();
 
-      // First start was called
       expect(mocks.bot.start).toHaveBeenCalledTimes(1);
 
-      // Flush the rejected promise
       await Promise.resolve();
       await Promise.resolve();
 
-      // Advance past the 5s restart delay
       jest.advanceTimersByTime(5000);
 
-      // Flush the restart call
       await Promise.resolve();
 
       expect(mocks.bot.start).toHaveBeenCalledTimes(2);
@@ -262,14 +227,11 @@ describe('TelegramUpdate', () => {
         mocks.agencyApp as any,
         mocks.agenciesService as any,
         mocks.agencyMgmt as any,
-        mocks.proxyChatSession as any,
-        mocks.proxyChatService as any,
-        mocks.chatAuditLog as any,
         mocks.bookingAcceptance as any,
+        mocks.bookingCallbackHandler as any,
         mocks.managerTakeover as any,
       );
 
-      // Should not throw even though bot is null
       await noBotUpdate.onModuleInit();
 
       expect(mocks.bot.use).not.toHaveBeenCalled();
@@ -277,18 +239,9 @@ describe('TelegramUpdate', () => {
   });
 
   describe('handleTextMessage (smoke test)', () => {
-    /**
-     * Exercises the full text-message path:
-     *   ctx → middleware routing → isActiveMember check → aiEngine.processMessage → sendMessage
-     *
-     * This is the exact path that broke when isActiveAgent was renamed to isActiveMember
-     * and the stale dist still called the old method name.
-     */
     it('should route a traveler text message through AI and reply', async () => {
-      // Register handlers so we can invoke the text handler
       await update.onModuleInit();
 
-      // Extract the text message handler registered via bot.on('message:text', handler)
       const onCall = mocks.bot.on.mock.calls.find(
         (call: any[]) => call[0] === 'message:text',
       );
@@ -303,18 +256,15 @@ describe('TelegramUpdate', () => {
 
       await textHandler(ctx);
 
-      // isActiveMember should be called to check agency status
       expect(mocks.agenciesService.isActiveMember).toHaveBeenCalledWith(
         MOCK_USER.telegramId,
       );
 
-      // AI engine processes the message
       expect(mocks.aiEngine.processMessage).toHaveBeenCalledWith(
         MOCK_USER.id,
         'I want to travel to Yerevan',
       );
 
-      // Response sent back to user
       expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
         12345,
         'Where would you like to go?',
@@ -367,7 +317,6 @@ describe('TelegramUpdate', () => {
 
       await textHandler(ctx);
 
-      // Generic error — sends error_generic message
       expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
         12345,
         expect.stringContaining('Произошла ошибка'),
@@ -397,7 +346,6 @@ describe('TelegramUpdate', () => {
 
       await textHandler(ctx);
 
-      // Infrastructure error — sends error_infrastructure message
       expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
         12345,
         expect.stringContaining('AI-сервис временно недоступен'),
@@ -449,7 +397,6 @@ describe('TelegramUpdate', () => {
         'tr-1',
         MOCK_USER.id,
       );
-      // Should try to edit the notification message
       expect(mocks.telegramService.editMessageText).toHaveBeenCalled();
     });
 
@@ -488,7 +435,7 @@ describe('TelegramUpdate', () => {
         text: 'Offer from Agency',
         buttons: [
           { label: 'Back', callbackData: 'offers:b:tr-1' },
-          { label: 'Ask question', callbackData: 'offers:ask:offer-1' },
+          { label: 'Ask manager', callbackData: 'offers:ask:offer-1' },
           { label: 'Accept offer', callbackData: 'offers:accept:offer-1' },
         ],
         imageFileIds: ['img1', 'img2'],
@@ -565,7 +512,6 @@ describe('TelegramUpdate', () => {
         travelRequestId: 'tr-1',
       });
 
-      // Edit will fail
       mocks.telegramService.editMessageText.mockRejectedValueOnce(
         new Error('message not found'),
       );
@@ -573,47 +519,53 @@ describe('TelegramUpdate', () => {
       const ctx = makeCallbackCtx(12345, 'offers:view:tr-1', 90);
       await handler(ctx);
 
-      // Should fall back to sendRfqToAgency
       expect(mocks.telegramService.sendRfqToAgency).toHaveBeenCalled();
     });
 
-    it('should start proxy chat when ask button pressed', async () => {
+    it('should send direct manager link when ask button pressed', async () => {
       await update.onModuleInit();
       const handler = getOffersHandler();
-
-      mocks.proxyChatSession.startTravelerChat.mockResolvedValue({
-        text: 'You are now chatting...',
-        proxyChatId: 'pc-1',
-      });
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
 
       const ctx = makeCallbackCtx(12345, 'offers:ask:offer-1');
       await handler(ctx);
 
-      expect(mocks.proxyChatSession.startTravelerChat).toHaveBeenCalledWith(
+      // Should send message with URL button (direct Telegram link)
+      expect(
+        mocks.telegramService.sendMessageWithUrlButton,
+      ).toHaveBeenCalledWith(
         12345,
-        'offer-1',
-        MOCK_USER.id,
+        expect.stringContaining('менеджеру'),
+        expect.stringContaining('менеджеру'),
+        'https://t.me/tm_harutyunyan',
       );
-      // Sticky session: sends reply keyboard + pins header
-      expect(mocks.telegramService.sendReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-        expect.any(Object),
+
+      // Should NOT create support threads or wait for text input
+      expect(mocks.aiEngine.processMessage).not.toHaveBeenCalled();
+    });
+
+    it('should NOT intercept next text message after ask button (no pending state)', async () => {
+      await update.onModuleInit();
+      const handler = getOffersHandler();
+
+      // Click "Ask manager"
+      const askCtx = makeCallbackCtx(12345, 'offers:ask:offer-1');
+      await handler(askCtx);
+
+      // Next text message should go to AI engine, not be intercepted
+      const textHandler = mocks.bot.on.mock.calls.find(
+        (call: any[]) => call[0] === 'message:text',
+      )![1];
+
+      await textHandler({
+        chat: { id: 12345 },
+        message: { text: 'I want to go to Paris' },
+        dbUser: MOCK_USER,
+      });
+
+      expect(mocks.aiEngine.processMessage).toHaveBeenCalledWith(
+        'user-001',
+        'I want to go to Paris',
       );
-      expect(mocks.telegramService.pinMessage).toHaveBeenCalledWith(12345, 200);
     });
 
     it('should show booking confirmation when accept button pressed', async () => {
@@ -663,12 +615,10 @@ describe('TelegramUpdate', () => {
         'offer-1',
         MOCK_USER.id,
       );
-      // Traveler gets confirmation
       expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
         12345,
         'Booking Created!',
       );
-      // Notifications sent
       expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
         99999,
         'Offer Accepted!',
@@ -689,721 +639,6 @@ describe('TelegramUpdate', () => {
       expect(mocks.telegramService.deleteMessage).toHaveBeenCalledWith(
         12345,
         85,
-      );
-    });
-  });
-
-  describe('proxy chat text routing', () => {
-    it('should route text to proxy chat when session is active', async () => {
-      await update.onModuleInit();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.handleMessage.mockResolvedValue({
-        targets: [
-          { chatId: 99999, text: 'Traveler:\nHello', contentType: 'TEXT' },
-        ],
-      });
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
-
-      const onCall = mocks.bot.on.mock.calls.find(
-        (call: any[]) => call[0] === 'message:text',
-      );
-      const textHandler = onCall![1];
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: 'Hello, what about visa?' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // touchSession called (both in handleTextMessage and handleProxyChatMessage)
-      expect(mocks.proxyChatSession.touchSession).toHaveBeenCalledWith(12345);
-
-      expect(mocks.proxyChatSession.handleMessage).toHaveBeenCalledWith(
-        12345,
-        'Hello, what about visa?',
-        'TEXT',
-        undefined,
-      );
-      // Should NOT call AI engine
-      expect(mocks.aiEngine.processMessage).not.toHaveBeenCalled();
-      // Should forward to counterpart
-      expect(mocks.telegramService.sendRfqToAgency).toHaveBeenCalledWith(
-        99999,
-        expect.any(String),
-        expect.any(Array),
-      );
-    });
-  });
-
-  describe('chat callback handler', () => {
-    function getChatHandler() {
-      const cbCall = mocks.bot.callbackQuery.mock.calls.find(
-        (call: any[]) => call[0] instanceof RegExp && call[0].source === '^chat:',
-      );
-      return cbCall?.[1];
-    }
-
-    function makeChatCtx(chatId: number, data: string) {
-      return {
-        callbackQuery: {
-          message: { chat: { id: chatId }, message_id: 50 },
-          data,
-        },
-        answerCallbackQuery: jest.fn().mockResolvedValue(undefined),
-        dbUser: MOCK_USER,
-      };
-    }
-
-    it('should start agency reply on chat:reply callback', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-      expect(handler).toBeDefined();
-
-      mocks.proxyChatSession.startAgencyReply.mockResolvedValue({
-        text: 'You are now replying...',
-        proxyChatId: 'pc-1',
-      });
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'AGENCY',
-        senderId: 'agent-user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [12345],
-        senderLabel: 'TravelCo',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
-
-      const ctx = makeChatCtx(99999, 'chat:reply:pc-1');
-      await handler(ctx);
-
-      expect(mocks.proxyChatSession.startAgencyReply).toHaveBeenCalledWith(
-        99999,
-        'pc-1',
-        MOCK_USER.telegramId,
-      );
-      // Sticky session: sends reply keyboard + pins header
-      expect(mocks.telegramService.sendReplyKeyboard).toHaveBeenCalledWith(
-        99999,
-        expect.any(String),
-        expect.any(Object),
-      );
-    });
-
-    it('should close chat on chat:close callback', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        pinnedMessageId: 200,
-        lastActivityAt: Date.now(),
-      });
-
-      const ctx = makeChatCtx(12345, 'chat:close:pc-1');
-      await handler(ctx);
-
-      // exitChatSession unpins + removes keyboard
-      expect(mocks.telegramService.unpinMessage).toHaveBeenCalledWith(12345, 200);
-      expect(mocks.telegramService.removeReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-      );
-      expect(mocks.proxyChatSession.closeChat).toHaveBeenCalledWith(
-        12345,
-        'pc-1',
-      );
-    });
-
-    it('should start manager chat on chat:mgr callback', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatSession.startTravelerManagerChat.mockResolvedValue({
-        text: 'You are chatting with manager...',
-        proxyChatId: 'pc-mgr',
-      });
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-mgr',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [88888],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'Manager Chat',
-        lastActivityAt: Date.now(),
-      });
-
-      const ctx = makeChatCtx(12345, 'chat:mgr:pc-mgr');
-      await handler(ctx);
-
-      expect(mocks.proxyChatSession.startTravelerManagerChat).toHaveBeenCalledWith(
-        12345,
-        'pc-mgr',
-        MOCK_USER.id,
-      );
-      expect(mocks.telegramService.sendReplyKeyboard).toHaveBeenCalled();
-    });
-
-    it('should exit session and show offer detail on chat:back', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
-
-      mocks.offerViewer.getOfferDetail.mockResolvedValue({
-        text: 'Offer detail',
-        buttons: [{ label: 'Back', callbackData: 'offers:b:tr-1' }],
-        imageFileIds: [],
-        documentFileIds: [],
-        travelRequestId: 'tr-1',
-      });
-
-      const ctx = makeChatCtx(12345, 'chat:back:offer-1');
-      await handler(ctx);
-
-      // exitChatSession removes keyboard + clears session
-      expect(mocks.telegramService.removeReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-      );
-      expect(mocks.proxyChatSession.exitSession).toHaveBeenCalledWith(12345);
-      expect(mocks.offerViewer.getOfferDetail).toHaveBeenCalledWith(
-        'offer-1',
-        MOCK_USER.id,
-      );
-    });
-  });
-
-  describe('keyboard interception', () => {
-    function getTextHandler() {
-      const onCall = mocks.bot.on.mock.calls.find(
-        (call: any[]) => call[0] === 'message:text',
-      );
-      return onCall![1];
-    }
-
-    it('should intercept "❌ Exit chat" and exit session', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        pinnedMessageId: 200,
-        lastActivityAt: Date.now(),
-      });
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: '❌ Exit chat' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should exit session, not forward to proxy chat
-      expect(mocks.telegramService.removeReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-      );
-      expect(mocks.telegramService.unpinMessage).toHaveBeenCalledWith(12345, 200);
-      expect(mocks.proxyChatSession.exitSession).toHaveBeenCalledWith(12345);
-      expect(mocks.proxyChatSession.handleMessage).not.toHaveBeenCalled();
-      expect(mocks.aiEngine.processMessage).not.toHaveBeenCalled();
-    });
-
-    it('should intercept "📄 Booking details" and show offer detail', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
-
-      mocks.offerViewer.getOfferDetail.mockResolvedValue({
-        text: 'Dubai offer details...',
-        buttons: [],
-        imageFileIds: [],
-        documentFileIds: [],
-        travelRequestId: 'tr-1',
-      });
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: '📄 Booking details' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should show offer detail as plain text (stay in chat mode)
-      expect(mocks.offerViewer.getOfferDetail).toHaveBeenCalledWith(
-        'offer-1',
-        'user-001',
-      );
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        'Dubai offer details...',
-      );
-      // Should NOT exit session
-      expect(mocks.proxyChatSession.exitSession).not.toHaveBeenCalled();
-      expect(mocks.proxyChatSession.handleMessage).not.toHaveBeenCalled();
-    });
-
-    it('should intercept "🆘 Contact manager" and send escalation', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-      });
-      mocks.bookingAcceptance.getManagerChannelChatId.mockReturnValue(777);
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: '🆘 Contact manager' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should send notification to manager channel
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        777,
-        expect.stringContaining('Manager Assistance'),
-      );
-      // Should confirm to user
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('Manager assistance request sent'),
-      );
-      // Should NOT exit session
-      expect(mocks.proxyChatSession.exitSession).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('/start exits active chat session', () => {
-    it('should exit chat session when /start is issued during active chat', async () => {
-      await update.onModuleInit();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        pinnedMessageId: 200,
-        lastActivityAt: Date.now(),
-      });
-
-      // Extract the /start handler
-      const cmdCall = mocks.bot.command.mock.calls.find(
-        (call: any[]) => call[0] === 'start',
-      );
-      expect(cmdCall).toBeDefined();
-      const startHandler = cmdCall![1];
-
-      const ctx = {
-        chat: { id: 12345 },
-        dbUser: MOCK_USER,
-      };
-
-      await startHandler(ctx);
-
-      // Should exit chat session first
-      expect(mocks.telegramService.unpinMessage).toHaveBeenCalledWith(12345, 200);
-      expect(mocks.telegramService.removeReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-      );
-      expect(mocks.proxyChatSession.exitSession).toHaveBeenCalledWith(12345);
-      // Should still send welcome message
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.any(String),
-      );
-    });
-  });
-
-  describe('session timeout cleanup', () => {
-    it('should clean up expired sessions on interval', async () => {
-      jest.useFakeTimers();
-
-      mocks.proxyChatSession.getExpiredSessions.mockReturnValue([
-        {
-          chatId: 12345,
-          session: {
-            proxyChatId: 'pc-1',
-            senderType: 'USER',
-            senderId: 'user-001',
-            offerId: 'offer-1',
-            travelRequestId: 'tr-1',
-            counterpartChatIds: [99999],
-            senderLabel: 'Traveler',
-            chatStatus: 'OPEN',
-            isManager: false,
-            agencyName: 'TravelCo',
-            pinnedMessageId: 200,
-            lastActivityAt: Date.now() - 31 * 60 * 1000,
-          },
-        },
-      ]);
-
-      await update.onModuleInit();
-
-      // Advance past the cleanup interval (5 minutes)
-      jest.advanceTimersByTime(5 * 60 * 1000);
-
-      // Flush all async work from cleanupExpiredSessions → exitChatSession chain
-      for (let i = 0; i < 10; i++) await Promise.resolve();
-
-      expect(mocks.proxyChatSession.getExpiredSessions).toHaveBeenCalled();
-      expect(mocks.telegramService.removeReplyKeyboard).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('inactivity'),
-      );
-      expect(mocks.proxyChatSession.exitSession).toHaveBeenCalledWith(12345);
-
-      jest.useRealTimers();
-    });
-  });
-
-  describe('reply-only enforcement', () => {
-    const chatSession = {
-      proxyChatId: 'pc-1',
-      senderType: 'USER',
-      senderId: 'user-001',
-      offerId: 'offer-1',
-      travelRequestId: 'tr-1',
-      counterpartChatIds: [99999],
-      senderLabel: 'Traveler',
-      chatStatus: 'OPEN',
-      isManager: false,
-      agencyName: 'TravelCo',
-      lastActivityAt: Date.now(),
-      lastReceivedForwardedMsgId: 500,
-    };
-
-    function getTextHandler() {
-      const onCall = mocks.bot.on.mock.calls.find(
-        (call: any[]) => call[0] === 'message:text',
-      );
-      return onCall![1];
-    }
-
-    it('should warn when text sent without reply_to_message', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue(chatSession);
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: 'Hello without reply' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should warn, not forward
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('reply to a message'),
-      );
-      expect(mocks.proxyChatSession.handleMessage).not.toHaveBeenCalled();
-    });
-
-    it('should forward when text sent with reply_to_message', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue(chatSession);
-      mocks.proxyChatSession.handleMessage.mockResolvedValue({
-        targets: [
-          { chatId: 99999, text: 'Forwarded msg', contentType: 'TEXT' },
-        ],
-      });
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: {
-          text: 'Hello with reply',
-          reply_to_message: { message_id: 500 },
-        },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should forward normally
-      expect(mocks.proxyChatSession.handleMessage).toHaveBeenCalledWith(
-        12345,
-        'Hello with reply',
-        'TEXT',
-        undefined,
-      );
-    });
-
-    it('should still intercept keyboard buttons without reply check', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        ...chatSession,
-        pinnedMessageId: 200,
-      });
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: '❌ Exit chat' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Keyboard intercept should happen before reply-only check
-      expect(mocks.proxyChatSession.exitSession).toHaveBeenCalledWith(12345);
-      expect(mocks.proxyChatSession.handleMessage).not.toHaveBeenCalled();
-    });
-
-    it('should skip reply-only check when no lastReceivedForwardedMsgId', async () => {
-      await update.onModuleInit();
-      const textHandler = getTextHandler();
-
-      mocks.proxyChatSession.hasActiveSession.mockReturnValue(true);
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        ...chatSession,
-        lastReceivedForwardedMsgId: undefined,
-      });
-      mocks.proxyChatSession.handleMessage.mockResolvedValue({
-        targets: [],
-      });
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: { text: 'No tracking yet' },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should forward without warning
-      expect(mocks.proxyChatSession.handleMessage).toHaveBeenCalled();
-    });
-  });
-
-  describe('chat:reopen callback', () => {
-    function getChatHandler() {
-      const cbCall = mocks.bot.callbackQuery.mock.calls.find(
-        (call: any[]) => call[0] instanceof RegExp && call[0].source === '^chat:',
-      );
-      return cbCall?.[1];
-    }
-
-    function makeReopenCtx(chatId: number, proxyChatId: string) {
-      return {
-        callbackQuery: {
-          message: { chat: { id: chatId }, message_id: 50 },
-          data: `chat:reopen:${proxyChatId}`,
-        },
-        answerCallbackQuery: jest.fn().mockResolvedValue(undefined),
-        dbUser: MOCK_USER,
-      };
-    }
-
-    it('should reopen chat for authorized participant', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatService.getParticipantTelegramIds.mockResolvedValue({
-        travelerTelegramId: MOCK_USER.telegramId,
-        agentTelegramIds: [BigInt(99999)],
-        agencyGroupChatId: null,
-      });
-
-      const ctx = makeReopenCtx(12345, 'pc-1');
-      await handler(ctx);
-
-      expect(mocks.proxyChatService.reopen).toHaveBeenCalledWith('pc-1');
-      expect(mocks.chatAuditLog.log).toHaveBeenCalledWith(
-        'pc-1',
-        'CHAT_REOPENED',
-        MOCK_USER.id,
-      );
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('reopened'),
-      );
-    });
-
-    it('should reject unauthorized user', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatService.getParticipantTelegramIds.mockResolvedValue({
-        travelerTelegramId: BigInt(999),
-        agentTelegramIds: [BigInt(888)],
-        agencyGroupChatId: null,
-      });
-
-      const ctx = makeReopenCtx(12345, 'pc-1');
-      await handler(ctx);
-
-      expect(mocks.proxyChatService.reopen).not.toHaveBeenCalled();
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('Not authorized'),
-      );
-    });
-
-    it('should handle chat not found', async () => {
-      await update.onModuleInit();
-      const handler = getChatHandler();
-
-      mocks.proxyChatService.getParticipantTelegramIds.mockResolvedValue(null);
-
-      const ctx = makeReopenCtx(12345, 'pc-nonexistent');
-      await handler(ctx);
-
-      expect(mocks.proxyChatService.reopen).not.toHaveBeenCalled();
-      expect(mocks.telegramService.sendMessage).toHaveBeenCalledWith(
-        12345,
-        expect.stringContaining('not found'),
-      );
-    });
-  });
-
-  describe('forwarded message ID capture', () => {
-    it('should update counterpart lastReceivedForwardedMsgId after forwarding', async () => {
-      await update.onModuleInit();
-
-      mocks.proxyChatSession.hasActiveSession.mockImplementation(
-        (chatId: number) => chatId === 12345 || chatId === 99999,
-      );
-      mocks.proxyChatSession.getSession.mockReturnValue({
-        proxyChatId: 'pc-1',
-        senderType: 'USER',
-        senderId: 'user-001',
-        offerId: 'offer-1',
-        travelRequestId: 'tr-1',
-        counterpartChatIds: [99999],
-        senderLabel: 'Traveler',
-        chatStatus: 'OPEN',
-        isManager: false,
-        agencyName: 'TravelCo',
-        lastActivityAt: Date.now(),
-        lastReceivedForwardedMsgId: 500,
-      });
-      mocks.proxyChatSession.handleMessage.mockResolvedValue({
-        targets: [
-          { chatId: 99999, text: 'Forwarded text', contentType: 'TEXT' },
-        ],
-      });
-      mocks.telegramService.sendRfqToAgency.mockResolvedValue(601);
-
-      const onCall = mocks.bot.on.mock.calls.find(
-        (call: any[]) => call[0] === 'message:text',
-      );
-      const textHandler = onCall![1];
-
-      const ctx = {
-        chat: { id: 12345 },
-        message: {
-          text: 'Hello',
-          reply_to_message: { message_id: 500 },
-        },
-        dbUser: MOCK_USER,
-      };
-
-      await textHandler(ctx);
-
-      // Should update counterpart's tracking
-      expect(mocks.proxyChatSession.setLastForwardedMsgId).toHaveBeenCalledWith(
-        99999,
-        601,
       );
     });
   });

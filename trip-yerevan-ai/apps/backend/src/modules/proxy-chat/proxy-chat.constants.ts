@@ -1,3 +1,5 @@
+import { ProxyChatState } from '@prisma/client';
+
 export const PROXY_CHAT_QUEUE = 'proxy-chat';
 export const PROXY_CHAT_CLEANUP_JOB = 'proxy-chat-cleanup';
 export const INACTIVITY_DAYS = 7;
@@ -27,9 +29,13 @@ export const CHAT_KEYBOARD_LABELS = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Closed-reason constants (type-safe strings for ProxyChat.closedReason)
+// State machine transition map
 // ---------------------------------------------------------------------------
 
-export const CLOSED_REASON_MANUAL = 'manual';
-export const CLOSED_REASON_AUTO_INACTIVITY = 'auto_closed_inactivity';
-export const CLOSED_REASON_MANAGER = 'manager_closed';
+export const VALID_TRANSITIONS: Record<ProxyChatState, ProxyChatState[]> = {
+  [ProxyChatState.OPEN]: [ProxyChatState.REPLY_ONLY, ProxyChatState.PAUSED, ProxyChatState.ESCALATED, ProxyChatState.CLOSED],
+  [ProxyChatState.REPLY_ONLY]: [ProxyChatState.OPEN, ProxyChatState.PAUSED, ProxyChatState.CLOSED],
+  [ProxyChatState.PAUSED]: [ProxyChatState.OPEN, ProxyChatState.ESCALATED, ProxyChatState.CLOSED],
+  [ProxyChatState.ESCALATED]: [ProxyChatState.OPEN, ProxyChatState.CLOSED],
+  [ProxyChatState.CLOSED]: [ProxyChatState.OPEN],
+};
