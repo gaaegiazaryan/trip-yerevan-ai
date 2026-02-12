@@ -10,6 +10,8 @@ import {
   BookingStateMachineService,
   BookingNotification,
 } from './booking-state-machine.service';
+import { EventBusService } from '../../infra/events';
+import { BookingCreatedEvent } from './events';
 
 export interface AcceptConfirmationResult {
   text: string;
@@ -39,6 +41,7 @@ export class BookingAcceptanceService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly stateMachine: BookingStateMachineService,
+    private readonly eventBus: EventBusService,
   ) {
     const raw = this.config.get<string>('MANAGER_CHANNEL_CHAT_ID');
     this.managerChannelChatId = raw ? Number(raw) : null;
@@ -233,6 +236,28 @@ export class BookingAcceptanceService {
     this.logger.log(
       `[booking] action=created, bookingId=${bookingId}, offerId=${offerId}, userId=${userId}, agencyId=${offer.agency.id}`,
     );
+
+    // Publish domain event (fire-and-forget — handlers run async)
+    this.eventBus
+      .publish(
+        new BookingCreatedEvent({
+          bookingId,
+          offerId: offer.id,
+          userId,
+          agencyId: offer.agency.id,
+          travelRequestId: offer.travelRequestId,
+          totalPrice: Number(offer.totalPrice),
+          currency: offer.currency,
+          destination: offer.travelRequest.destination,
+          agencyName: offer.agency.name,
+        }),
+      )
+      .catch((err) =>
+        this.logger.error(
+          `[booking] Event publish failed: ${err}`,
+          err instanceof Error ? err.stack : undefined,
+        ),
+      );
 
     // Transition CREATED → AWAITING_AGENCY_CONFIRMATION via state machine.
     // Wrapped in try/catch: booking creation is the critical path — if the

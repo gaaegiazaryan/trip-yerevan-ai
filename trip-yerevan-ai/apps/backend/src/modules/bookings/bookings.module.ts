@@ -13,6 +13,7 @@ import { MeetingProposalCallbackHandler } from './meeting-proposal-callback.hand
 import { BookingsController } from './bookings.controller';
 import { TelegramModule } from '../telegram/telegram.module';
 import { BOOKING_QUEUE } from './booking.constants';
+import { LogBookingCreatedHandler, SendBookingNotificationsHandler } from './events';
 
 @Module({
   imports: [
@@ -31,6 +32,8 @@ import { BOOKING_QUEUE } from './booking.constants';
     MeetingProposalService,
     MeetingProposalWizardService,
     MeetingProposalCallbackHandler,
+    LogBookingCreatedHandler,
+    SendBookingNotificationsHandler,
   ],
   exports: [
     BookingsService,

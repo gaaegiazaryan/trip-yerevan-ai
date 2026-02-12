@@ -34,6 +34,13 @@ function createMockStateMachine() {
   };
 }
 
+function createMockEventBus() {
+  return {
+    publish: jest.fn().mockResolvedValue(undefined),
+    publishAll: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 const OWNER_USER_ID = 'user-owner-001';
 const OTHER_USER_ID = 'user-other-002';
 const OFFER_ID = 'offer-001';
@@ -72,12 +79,19 @@ describe('BookingAcceptanceService', () => {
   let prisma: ReturnType<typeof createMockPrisma>;
   let config: ReturnType<typeof createMockConfig>;
   let stateMachine: ReturnType<typeof createMockStateMachine>;
+  let eventBus: ReturnType<typeof createMockEventBus>;
 
   beforeEach(() => {
     prisma = createMockPrisma();
     config = createMockConfig();
     stateMachine = createMockStateMachine();
-    service = new BookingAcceptanceService(prisma as any, config as any, stateMachine as any);
+    eventBus = createMockEventBus();
+    service = new BookingAcceptanceService(
+      prisma as any,
+      config as any,
+      stateMachine as any,
+      eventBus as any,
+    );
   });
 
   describe('showConfirmation', () => {
@@ -208,7 +222,12 @@ describe('BookingAcceptanceService', () => {
     it('should include manager channel notification when ENV is set', async () => {
       config.get.mockReturnValue('77777');
       // Recreate service with manager channel configured
-      service = new BookingAcceptanceService(prisma as any, config as any, stateMachine as any);
+      service = new BookingAcceptanceService(
+        prisma as any,
+        config as any,
+        stateMachine as any,
+        eventBus as any,
+      );
 
       prisma.offer.findUnique.mockResolvedValue(makeOffer());
       prisma.$transaction.mockImplementation(async (fn: any) => {
@@ -326,6 +345,55 @@ describe('BookingAcceptanceService', () => {
         },
         data: { status: OfferStatus.WITHDRAWN },
       });
+    });
+
+    it('should publish BookingCreatedEvent after successful creation', async () => {
+      prisma.offer.findUnique.mockResolvedValue(makeOffer());
+      prisma.$transaction.mockImplementation(async (fn: any) => {
+        return fn({
+          booking: { create: jest.fn().mockResolvedValue({ id: 'booking-006' }) },
+          offer: { update: jest.fn(), updateMany: jest.fn() },
+          travelRequest: { update: jest.fn() },
+        });
+      });
+
+      await service.confirmAcceptance(OFFER_ID, OWNER_USER_ID);
+
+      // eventBus.publish is called fire-and-forget (.catch), so verify it was called
+      expect(eventBus.publish).toHaveBeenCalledTimes(1);
+      const event = eventBus.publish.mock.calls[0][0];
+      expect(event.eventName).toBe('booking.created');
+      expect(event.payload).toMatchObject({
+        bookingId: 'booking-006',
+        offerId: OFFER_ID,
+        userId: OWNER_USER_ID,
+        agencyId: AGENCY_ID,
+        travelRequestId: TR_ID,
+        destination: 'Dubai',
+        agencyName: 'TravelCo',
+      });
+    });
+
+    it('should NOT publish event when creation fails', async () => {
+      prisma.offer.findUnique.mockResolvedValue(makeOffer());
+      prisma.$transaction.mockRejectedValue(new Error('DB connection lost'));
+
+      await expect(
+        service.confirmAcceptance(OFFER_ID, OWNER_USER_ID),
+      ).rejects.toThrow();
+
+      expect(eventBus.publish).not.toHaveBeenCalled();
+    });
+
+    it('should NOT publish event on double-accept race', async () => {
+      prisma.offer.findUnique.mockResolvedValue(makeOffer());
+      const uniqueError = new Error('Unique constraint failed') as any;
+      uniqueError.code = 'P2002';
+      prisma.$transaction.mockRejectedValue(uniqueError);
+
+      await service.confirmAcceptance(OFFER_ID, OWNER_USER_ID);
+
+      expect(eventBus.publish).not.toHaveBeenCalled();
     });
 
     it('should skip manager notification when ENV not set', async () => {

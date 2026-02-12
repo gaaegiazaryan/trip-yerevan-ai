@@ -264,6 +264,25 @@ enum RiskEntityType {
   BOOKING
 }
 
+enum NotificationChannel {
+  TELEGRAM
+  EMAIL
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum NotificationCategory {
+  CRITICAL
+  TRANSACTIONAL
+  MARKETING
+}
+
 // ============================================================================
 // USERS
 // ============================================================================
@@ -298,6 +317,8 @@ model User {
   supportMessages      SupportMessage[]    @relation("SupportMessageSender")
   authoredNotes        ManagerNote[]
   managedBookings      Booking[]           @relation("BookingManager")
+  notificationTemplates NotificationTemplate[] @relation("notificationTemplatesCreated")
+  notificationPreferences UserNotificationPreference[]
 
   @@map("users")
 }
@@ -907,4 +928,108 @@ model RiskEvent {
   @@index([severity])
   @@index([createdAt])
   @@map("risk_events")
+}
+
+// ============================================================================
+// NOTIFICATION LOGS
+// ============================================================================
+
+model NotificationLog {
+  id                String             @id @default(uuid()) @db.Uuid
+  eventName         String
+  recipientId       String
+  recipientChatId   Int
+  channel           NotificationChannel
+  templateKey       String
+  payload           Json?
+  status            NotificationStatus @default(PENDING)
+  errorMessage      String?
+  attemptCount      Int                @default(0)
+  nextRetryAt       DateTime?
+  lastAttemptAt     DateTime?
+  idempotencyKey    String             @unique
+  providerMessageId String?
+  templateVersion   String?
+  templateSnapshot  String?
+  policyVersion     String?
+  skipReason        String?
+  createdAt         DateTime           @default(now())
+  sentAt            DateTime?
+  updatedAt         DateTime           @updatedAt
+
+  @@index([recipientId])
+  @@index([eventName])
+  @@index([status])
+  @@index([createdAt])
+  @@index([status, nextRetryAt])
+  @@map("notification_logs")
+}
+
+// ============================================================================
+// NOTIFICATION TEMPLATES
+// ============================================================================
+
+model NotificationTemplate {
+  id            String              @id @default(uuid()) @db.Uuid
+  templateKey   String
+  version       String
+  channel       NotificationChannel
+  body          String
+  buttons       Json?
+  variables     Json?
+  isActive      Boolean             @default(false)
+  policyVersion String?
+  createdById   String?             @db.Uuid
+  createdBy     User?               @relation("notificationTemplatesCreated", fields: [createdById], references: [id])
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([templateKey, version, channel])
+  @@index([templateKey, channel, isActive])
+  @@map("notification_templates")
+}
+
+// ============================================================================
+// NOTIFICATION PREFERENCES
+// ============================================================================
+
+model SystemNotificationPolicy {
+  id              String               @id @default(uuid()) @db.Uuid
+  templateKey     String               @unique
+  category        NotificationCategory
+  allowedChannels Json                 // e.g. ["TELEGRAM","EMAIL"]
+  forceDeliver    Boolean              @default(false)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@index([category])
+  @@map("system_notification_policies")
+}
+
+model RoleNotificationDefault {
+  id        String               @id @default(uuid()) @db.Uuid
+  role      UserRole
+  category  NotificationCategory
+  channel   NotificationChannel
+  enabled   Boolean              @default(true)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@unique([role, category, channel])
+  @@map("role_notification_defaults")
+}
+
+model UserNotificationPreference {
+  id        String               @id @default(uuid()) @db.Uuid
+  userId    String               @db.Uuid
+  user      User                 @relation(fields: [userId], references: [id])
+  category  NotificationCategory
+  channel   NotificationChannel
+  enabled   Boolean
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@unique([userId, category, channel])
+  @@index([userId])
+  @@map("user_notification_preferences")
 }

@@ -9,6 +9,9 @@ import { AdminAgenciesController } from './admin-agencies.controller';
 import { AdminTravelersController } from './admin-travelers.controller';
 import { AdminNotesController } from './admin-notes.controller';
 import { AdminRiskController } from './admin-risk.controller';
+import { AdminNotificationsController } from './admin-notifications.controller';
+import { AdminTemplatesController } from './admin-templates.controller';
+import { AdminNotificationPoliciesController } from './admin-notification-policies.controller';
 
 @Module({
   imports: [BookingsModule],
@@ -21,6 +24,9 @@ import { AdminRiskController } from './admin-risk.controller';
     AdminTravelersController,
     AdminNotesController,
     AdminRiskController,
+    AdminNotificationsController,
+    AdminTemplatesController,
+    AdminNotificationPoliciesController,
   ],
   providers: [AdminService],
 })

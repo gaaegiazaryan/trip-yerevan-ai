@@ -6,6 +6,8 @@ import { PrismaModule } from './infra/prisma/prisma.module';
 import { QueueModule } from './infra/queue/queue.module';
 import { CacheModule } from './infra/cache/cache.module';
 import { LoggerModule } from './infra/logger/logger.module';
+import { EventsModule } from './infra/events';
+import { NotificationsModule } from './infra/notifications';
 
 // Platform modules
 import { HealthModule } from './modules/health/health.module';
@@ -39,6 +41,8 @@ import { DevAuthMiddleware } from './common/middleware/dev-auth.middleware';
     QueueModule,
     CacheModule,
     LoggerModule,
+    EventsModule,
+    NotificationsModule,
 
     // Platform
     HealthModule,
@@ -59,6 +63,8 @@ import { DevAuthMiddleware } from './common/middleware/dev-auth.middleware';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(DevAuthMiddleware).forRoutes('admin/*path');
+    consumer
+      .apply(DevAuthMiddleware)
+      .forRoutes('admin/*path', 'me/*path');
   }
 }
